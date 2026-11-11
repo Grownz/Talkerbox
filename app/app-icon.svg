@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#2563eb"/>
+  <path d="M120 150h272a40 40 0 0 1 40 40v130a40 40 0 0 1-40 40H250l-82 64v-64h-48a40 40 0 0 1-40-40V190a40 40 0 0 1 40-40z" fill="#fff"/>
+  <rect x="170" y="230" width="24" height="60" rx="12" fill="#2563eb"/>
+  <rect x="220" y="205" width="24" height="110" rx="12" fill="#2563eb"/>
+  <rect x="270" y="220" width="24" height="80" rx="12" fill="#2563eb"/>
+  <rect x="320" y="240" width="24" height="40" rx="12" fill="#2563eb"/>
+</svg>

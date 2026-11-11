@@ -23,3 +23,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Built sidecar binary (build via tts-sidecar/build.ps1)
+app/src-tauri/binaries/*.exe

@@ -1,0 +1,22 @@
+[package]
+name = "talkerbox"
+version = "0.1.0"
+description = "Talkerbox: local chatbot with spoken replies (Ollama + TTS sidecar)"
+edition = "2021"
+
+[lib]
+name = "talkerbox_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# native-tls uses Windows SChannel: no extra C toolchain (cmake/nasm) needed.
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "native-tls"] }
+tokio = { version = "1", features = ["sync", "time", "fs", "io-util", "macros"] }
+sha2 = "0.10"
