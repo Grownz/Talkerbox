@@ -46,27 +46,27 @@
     <p class="muted">
       Kokoro ONNX fine-tune: <code>{modelUrl}</code>. Everything is downloaded into its own pack folder.
     </p>
-    <label>Pack name <input bind:value={name} disabled={job.busy} /></label>
+    <label>Pack name <input title="Name shown in the voice picker and pack list" bind:value={name} disabled={job.busy} /></label>
     <label>
       Language (espeak-ng code)
-      <input bind:value={language} list="espeak-codes" placeholder="e.g. de" disabled={job.busy} />
+      <input title="espeak-ng code used to turn text into phonemes, e.g. de or pt-br" bind:value={language} list="espeak-codes" placeholder="e.g. de" disabled={job.busy} />
       <span class="muted">{langName ?? (language ? 'unknown code' : '')}</span>
     </label>
     <datalist id="espeak-codes">
       {#each Object.entries(ESPEAK) as [code, l] (code)}<option value={code}>{l.name}</option>{/each}
     </datalist>
-    <label>Vocab JSON link (optional) <input bind:value={vocabUrl} placeholder="https://…/vocab.json" disabled={job.busy} /></label>
+    <label>Vocab JSON link (optional) <input title="Only needed if the model uses a different phoneme vocabulary" bind:value={vocabUrl} placeholder="https://…/vocab.json" disabled={job.busy} /></label>
     <label class="stack">
       Voice links (.pt, .npy, .npz, .bin), one per line
-      <textarea bind:value={voiceUrls} rows="3" disabled={job.busy}></textarea>
+      <textarea title="At least one voice file link; one per line" bind:value={voiceUrls} rows="3" disabled={job.busy}></textarea>
     </label>
     <JobStatus {job} text={progressText(job.progress)} />
     <div class="row end">
       {#if job.busy}
-        <button onclick={() => job.cancel()}>Cancel download</button>
+        <button title="Stop and remove the partially installed pack" onclick={() => job.cancel()}>Cancel download</button>
       {:else}
-        <button class="ghost" onclick={onClose}>Close</button>
-        <button onclick={create} disabled={!name.trim() || !language.trim() || !voiceUrls.trim()}>Download & install</button>
+        <button class="ghost" title="Close without installing" onclick={onClose}>Close</button>
+        <button title={!name.trim() || !language.trim() || !voiceUrls.trim() ? 'Enter a name, a language and at least one voice link first' : 'Download the model and voices and install the pack'} onclick={create} disabled={!name.trim() || !language.trim() || !voiceUrls.trim()}>Download & install</button>
       {/if}
     </div>
   </div>

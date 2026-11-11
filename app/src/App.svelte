@@ -17,9 +17,10 @@
   const ledAction = $derived.by((): { label: string; run?: () => void } => {
     if (!status) return { label: 'Checking Ollama…' }
     if (busy) return { label: busy === 'start' ? 'Starting Ollama…' : 'Stopping Ollama…' }
-    if (status.running && status.startedByApp) return { label: 'Ollama is running. Click to stop it.', run: () => run('stop') }
+    if (status.running && status.startedByApp)
+      return { label: 'Stop the Ollama server (it is running and was started by Talkerbox).', run: () => run('stop') }
     if (status.running) return { label: 'Ollama is running (started outside Talkerbox). Stop it from its tray icon.' }
-    if (status.exe) return { label: 'Ollama is stopped. Click to start it.', run: () => run('start') }
+    if (status.exe) return { label: 'Start the Ollama server (it is currently stopped).', run: () => run('start') }
     return { label: 'Ollama not found. Click to set its location.', run: () => (showPathDialog = true) }
   })
   let error = $state('')
@@ -69,8 +70,8 @@
 <header>
   <h1>Talkerbox</h1>
   <nav>
-    <button class:active={tab === 'chat'} onclick={() => (tab = 'chat')}>Chat</button>
-    <button class:active={tab === 'models'} onclick={() => (tab = 'models')}>Models</button>
+    <button class:active={tab === 'chat'} title="Talk to the selected model and hear its replies" onclick={() => (tab = 'chat')}>Chat</button>
+    <button class:active={tab === 'models'} title="Manage Ollama models, TTS files, voices and language packs" onclick={() => (tab = 'models')}>Models</button>
   </nav>
   <div class="ollama">
     <span>
@@ -91,8 +92,8 @@
     ></button>
     <button
       class="ghost icon"
-      title="Show Ollama server output"
-      aria-label="Show Ollama server output"
+      title="Show the Ollama server output (read-only log of the server Talkerbox started)"
+      aria-label="Show the Ollama server output (read-only log of the server Talkerbox started)"
       onclick={() => (showTerminal = true)}
     >
       <svg viewBox="0 0 20 16" aria-hidden="true">
@@ -100,12 +101,16 @@
         <path d="M4 5l3 3-3 3M9 11.5h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
     </button>
-    <button class="ghost" title={status?.exe ?? 'Set ollama.exe location'} onclick={() => (showPathDialog = true)}>Path…</button>
+    <button
+      class="ghost"
+      title={status?.exe ? `Choose a different ollama.exe (current: ${status.exe})` : 'Choose where ollama.exe is installed'}
+      onclick={() => (showPathDialog = true)}>Path…</button
+    >
   </div>
 </header>
 
 {#if error}
-  <div class="banner error" role="alert">{error} <button class="ghost" onclick={() => (error = '')}>Dismiss</button></div>
+  <div class="banner error" role="alert">{error} <button class="ghost" title="Hide this error message" onclick={() => (error = '')}>Dismiss</button></div>
 {/if}
 
 <main>

@@ -79,9 +79,9 @@
     <div class="section-head">
       <h2 id="term-title">Ollama server output</h2>
       <div class="row">
-        {#if !follow}<button class="ghost" onclick={jumpToEnd}>Auto-scroll paused: jump to end</button>{/if}
-        <button class="ghost" onclick={clear}>Clear</button>
-        <button class="ghost" bind:this={closeBtn} onclick={onClose}>Close</button>
+        {#if !follow}<button class="ghost" title="Scroll to the newest output and follow it again" onclick={jumpToEnd}>Auto-scroll paused: jump to end</button>{/if}
+        <button class="ghost" title="Empty the captured output (the server keeps running)" onclick={clear}>Clear</button>
+        <button class="ghost" title="Close this view (Escape); output keeps being captured" bind:this={closeBtn} onclick={onClose}>Close</button>
       </div>
     </div>
     {#if running && !startedByApp}

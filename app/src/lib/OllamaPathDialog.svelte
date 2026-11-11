@@ -36,16 +36,16 @@
     </p>
     <label>
       Path
-      <input bind:value={path} placeholder="C:\Users\you\AppData\Local\Programs\Ollama" />
+      <input title="Path to ollama.exe or the folder that contains it" bind:value={path} placeholder="C:\Users\you\AppData\Local\Programs\Ollama" />
     </label>
     <div class="row">
-      <button class="ghost" onclick={() => browse(true)}>Browse folder…</button>
-      <button class="ghost" onclick={() => browse(false)}>Browse exe…</button>
+      <button class="ghost" title="Pick the Ollama install folder" onclick={() => browse(true)}>Browse folder…</button>
+      <button class="ghost" title="Pick ollama.exe directly" onclick={() => browse(false)}>Browse exe…</button>
     </div>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     <div class="row end">
-      <button class="ghost" onclick={onClose}>Cancel</button>
-      <button disabled={!path.trim()} onclick={save}>Save</button>
+      <button class="ghost" title="Close without changing the path" onclick={onClose}>Cancel</button>
+      <button title={path.trim() ? 'Check this path and remember it' : 'Enter or browse to a path first'} disabled={!path.trim()} onclick={save}>Save</button>
     </div>
   </div>
 </div>

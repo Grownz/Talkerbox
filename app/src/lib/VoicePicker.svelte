@@ -96,7 +96,7 @@
     aria-haspopup="listbox"
     aria-expanded={open}
     aria-label={`Voice: ${current ? `${current.label}, ${current.language}` : 'none'}`}
-    title={value ?? ''}
+    title={value ? `Choose the voice that reads replies (current: ${value})` : 'Choose the voice that reads replies'}
     disabled={!voices.length}
     onclick={() => (open ? close() : show())}
     onkeydown={onButtonKey}
@@ -127,7 +127,7 @@
                 role="option"
                 aria-selected={v.id === value}
                 class:active={i === active}
-                title={v.id}
+                title={`Use voice ${v.id} (${v.language})`}
                 onclick={() => choose(v.id)}
                 onpointermove={() => (active = i)}
               >

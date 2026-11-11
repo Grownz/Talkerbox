@@ -232,7 +232,7 @@
 <section>
   <div class="section-head">
     <h2>Installed Ollama models</h2>
-    <button class="ghost" onclick={refresh} disabled={!running}>Refresh</button>
+    <button class="ghost" title={running ? 'Reload the list of installed Ollama models' : 'Start Ollama to list its models'} onclick={refresh} disabled={!running}>Refresh</button>
   </div>
   {#if !running}
     <p class="muted">Start Ollama to manage models.</p>
@@ -250,7 +250,7 @@
             <td>{formatBytes(m.size)}</td>
             <td>{m.details.parameterSize ?? ''}</td>
             <td>{m.details.quantizationLevel ?? ''}</td>
-            <td><button class="ghost danger" onclick={() => remove(m.name)}>Delete</button></td>
+            <td><button class="ghost danger" title={`Remove ${m.name} from Ollama (asks for confirmation)`} onclick={() => remove(m.name)}>Delete</button></td>
           </tr>
         {/each}
       </tbody>
@@ -265,11 +265,11 @@
     repository must contain GGUF files.
   </p>
   <div class="row">
-    <input bind:value={pullInput} placeholder="https://huggingface.co/user/repo-GGUF" disabled={pull.busy} />
+    <input title="HuggingFace link, hf.co/user/repo:quant or an Ollama library name" bind:value={pullInput} placeholder="https://huggingface.co/user/repo-GGUF" disabled={pull.busy} />
     {#if pull.busy}
-      <button onclick={() => pull.cancel()}>Cancel</button>
+      <button title="Stop pulling; Ollama keeps finished layers" onclick={() => pull.cancel()}>Cancel</button>
     {:else}
-      <button onclick={doPull} disabled={!running || !pullInput.trim()}>Pull</button>
+      <button title={!running ? 'Start Ollama first' : !pullInput.trim() ? 'Paste a link or model name first' : 'Download this model into Ollama'} onclick={doPull} disabled={!running || !pullInput.trim()}>Pull</button>
     {/if}
   </div>
   <JobStatus job={pull} text={progressText(pull.progress)} />
@@ -282,14 +282,14 @@
     removed after Ollama has imported it.
   </p>
   <div class="row">
-    <input bind:value={ggufUrl} onchange={suggestName} placeholder="https://example.com/model-Q4_K_M.gguf" disabled={gguf.busy} />
+    <input title="Direct http(s) link to a .gguf file" bind:value={ggufUrl} onchange={suggestName} placeholder="https://example.com/model-Q4_K_M.gguf" disabled={gguf.busy} />
   </div>
   <div class="row">
-    <input bind:value={ggufName} placeholder="Model name in Ollama" disabled={gguf.busy} />
+    <input title="Name the model will get in Ollama" bind:value={ggufName} placeholder="Model name in Ollama" disabled={gguf.busy} />
     {#if gguf.busy}
-      <button onclick={() => gguf.cancel()}>Cancel</button>
+      <button title="Stop; the partial download resumes next time" onclick={() => gguf.cancel()}>Cancel</button>
     {:else}
-      <button onclick={doImport} disabled={!running || !ggufUrl.trim() || !ggufName.trim()}>Download & import</button>
+      <button title={!running ? 'Start Ollama first' : !ggufUrl.trim() || !ggufName.trim() ? 'Enter the .gguf link and a model name first' : 'Download the file, import it into Ollama, then delete the download'} onclick={doImport} disabled={!running || !ggufUrl.trim() || !ggufName.trim()}>Download & import</button>
     {/if}
   </div>
   <JobStatus job={gguf} text={progressText(gguf.progress)} />
@@ -312,28 +312,28 @@
       <p class="muted">Kokoro files missing. Download them, or use a folder that already has them.</p>
     {/if}
     <div class="row">
-      <button class="ghost" onclick={chooseTtsDir}>Use existing folder…</button>
+      <button class="ghost" title="Use Kokoro model files from a folder you already have instead of downloading them" onclick={chooseTtsDir}>Use existing folder…</button>
       {#if tts.customDir}
-        <button class="ghost" onclick={() => ttsAction(() => api.setTtsModelDir(null))}>Use default folder</button>
+        <button class="ghost" title="Go back to the Kokoro files in the app data folder" onclick={() => ttsAction(() => api.setTtsModelDir(null))}>Use default folder</button>
       {:else if tts.modelReady}
-        <button class="ghost" onclick={() => (showTtsDownloads = !showTtsDownloads)}>
+        <button class="ghost" title={showTtsDownloads ? 'Hide the download buttons' : 'Show the download buttons to fetch the Kokoro files again'} onclick={() => (showTtsDownloads = !showTtsDownloads)}>
           {showTtsDownloads ? 'Hide downloads' : 'Re-download…'}
         </button>
-        <button class="ghost danger" disabled={ttsJob.busy} onclick={deleteTts}>Delete files</button>
+        <button class="ghost danger" title={ttsJob.busy ? 'Wait for the download to finish' : 'Delete the downloaded Kokoro model and voices (asks for confirmation)'} disabled={ttsJob.busy} onclick={deleteTts}>Delete files</button>
       {/if}
     </div>
     {#if ttsError}<p class="error" role="alert">{ttsError}</p>{/if}
     {#if !tts.modelReady || showTtsDownloads || ttsJob.busy}
       <div class="row">
-        <button disabled={ttsJob.busy} onclick={() => downloadTts(tts!.defaultModelUrl)}>Download kokoro-v1.0.onnx</button>
-        <button disabled={ttsJob.busy} onclick={() => downloadTts(tts!.defaultVoicesUrl)}>Download voices-v1.0.bin</button>
+        <button title={ttsJob.busy ? 'Another TTS download is running' : 'Download the Kokoro speech model (about 310 MB)'} disabled={ttsJob.busy} onclick={() => downloadTts(tts!.defaultModelUrl)}>Download kokoro-v1.0.onnx</button>
+        <button title={ttsJob.busy ? 'Another TTS download is running' : 'Download the 54 built-in Kokoro voices (about 27 MB)'} disabled={ttsJob.busy} onclick={() => downloadTts(tts!.defaultVoicesUrl)}>Download voices-v1.0.bin</button>
       </div>
       <div class="row">
-        <input bind:value={ttsUrl} placeholder="Other TTS file URL (.onnx / .bin)" disabled={ttsJob.busy} />
+        <input title="Direct link to another Kokoro .onnx model or voices .bin file" bind:value={ttsUrl} placeholder="Other TTS file URL (.onnx / .bin)" disabled={ttsJob.busy} />
         {#if ttsJob.busy}
-          <button onclick={() => ttsJob.cancel()}>Cancel</button>
+          <button title="Stop; the partial download resumes next time" onclick={() => ttsJob.cancel()}>Cancel</button>
         {:else}
-          <button onclick={() => downloadTts(ttsUrl)} disabled={!ttsUrl.trim()}>Download</button>
+          <button title={ttsUrl.trim() ? 'Download this file into the TTS folder' : 'Paste a link first'} onclick={() => downloadTts(ttsUrl)} disabled={!ttsUrl.trim()}>Download</button>
         {/if}
       </div>
     {/if}
@@ -352,11 +352,11 @@
             <strong>{f.name}</strong>
             <span class="muted">{formatBytes(f.totalSize)} · {f.license} · <code title="Source">{f.source}</code></span>
             {#if f.installed}
-              <button disabled title="Delete it in the pack list below">Installed</button>
+              <button disabled title="Already installed; delete it in the pack list below to reinstall">Installed</button>
             {:else if job.busy}
-              <button onclick={() => job.cancel()}>Cancel</button>
+              <button title="Stop the install and remove the partial pack" onclick={() => job.cancel()}>Cancel</button>
             {:else}
-              <button onclick={() => installFeatured(f)}>Install</button>
+              <button title={`Download ${formatBytes(f.totalSize)} and install this pack; its voice then appears in the voice picker`} onclick={() => installFeatured(f)}>Install</button>
             {/if}
           </div>
           <JobStatus {job} text={progressText(job.progress)} />
@@ -381,18 +381,18 @@
             {#if lang && FLAGS[lang.country]}<img class="flag" src={FLAGS[lang.country]} alt="" />{/if}
             <strong>{p.name}</strong>
             <span class="muted">{lang?.name ?? p.language} · {p.voices.map((v) => v.replace(/\.[^.]+$/, '')).join(', ')}</span>
-            <button class="ghost" disabled={packVoiceJob.busy} onclick={() => (packVoiceFor = packVoiceFor === p.id ? null : p.id)}>
+            <button class="ghost" title={packVoiceJob.busy ? 'Wait for the current voice download' : `Add another voice file to ${p.name}`} disabled={packVoiceJob.busy} onclick={() => (packVoiceFor = packVoiceFor === p.id ? null : p.id)}>
               Add voice to this pack
             </button>
-            <button class="ghost danger" disabled={packVoiceJob.busy} onclick={() => removePack(p)}>Delete pack</button>
+            <button class="ghost danger" title={packVoiceJob.busy ? 'Wait for the current voice download' : `Delete ${p.name} with its model and voices (asks for confirmation)`} disabled={packVoiceJob.busy} onclick={() => removePack(p)}>Delete pack</button>
           </div>
           {#if packVoiceFor === p.id}
             <div class="row">
-              <input bind:value={packVoiceUrl} placeholder="Voice link (.pt, .npy, .npz, .bin)" disabled={packVoiceJob.busy} />
+              <input title="Link to a voice file (.pt, .npy, .npz, .bin) for this pack" bind:value={packVoiceUrl} placeholder="Voice link (.pt, .npy, .npz, .bin)" disabled={packVoiceJob.busy} />
               {#if packVoiceJob.busy}
-                <button onclick={() => packVoiceJob.cancel()}>Cancel</button>
+                <button title="Stop downloading this voice" onclick={() => packVoiceJob.cancel()}>Cancel</button>
               {:else}
-                <button onclick={() => addPackVoice(p.id)} disabled={!packVoiceUrl.trim()}>Download</button>
+                <button title={packVoiceUrl.trim() ? 'Download the voice into this pack and restart speech' : 'Paste a voice link first'} onclick={() => addPackVoice(p.id)} disabled={!packVoiceUrl.trim()}>Download</button>
               {/if}
             </div>
             <JobStatus job={packVoiceJob} text={progressText(packVoiceJob.progress)} />
@@ -406,7 +406,7 @@
       {#each customVoices as v (v.name)}
         <li>
           <code>{v.name}</code> <span class="muted">{formatBytes(v.size)}</span>
-          <button class="ghost danger" disabled={voiceJob.busy} onclick={() => removeVoice(v.name)}>Delete</button>
+          <button class="ghost danger" title={voiceJob.busy ? 'Wait for the current download' : `Delete voice file ${v.name} (asks for confirmation)`} disabled={voiceJob.busy} onclick={() => removeVoice(v.name)}>Delete</button>
         </li>
       {/each}
     </ul>
@@ -414,20 +414,21 @@
   {#if showVoiceInput || voiceJob.busy}
     <div class="row">
       <input
+        title="Link to a voice file or an ONNX model"
         bind:value={voiceUrl}
         placeholder="https://huggingface.co/hexgrad/Kokoro-82M/blob/main/voices/af_heart.pt"
         disabled={voiceJob.busy}
       />
       {#if voiceJob.busy}
-        <button onclick={() => voiceJob.cancel()}>Cancel</button>
+        <button title="Stop downloading this voice" onclick={() => voiceJob.cancel()}>Cancel</button>
       {:else}
-        <button onclick={addFromLink} disabled={!voiceUrl.trim() || linkChecking}>Download</button>
-        <button class="ghost" onclick={() => (showVoiceInput = false)}>Close</button>
+        <button title={voiceUrl.trim() ? 'Voice files install directly; an .onnx model opens the language pack dialog' : 'Paste a link first'} onclick={addFromLink} disabled={!voiceUrl.trim() || linkChecking}>Download</button>
+        <button class="ghost" title="Hide the link input" onclick={() => (showVoiceInput = false)}>Close</button>
       {/if}
     </div>
   {:else}
     <div class="row">
-      <button class="ghost" onclick={() => (showVoiceInput = true)}>Add model or voice from link…</button>
+      <button class="ghost" title="Paste a link to a Kokoro voice file or an ONNX fine-tune model" onclick={() => (showVoiceInput = true)}>Add model or voice from link…</button>
     </div>
   {/if}
   <JobStatus job={voiceJob} text={progressText(voiceJob.progress)} />
