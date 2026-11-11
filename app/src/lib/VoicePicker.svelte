@@ -1,25 +1,20 @@
 <script lang="ts">
   // Accessible custom listbox: native <select> cannot show images and Windows has no flag emoji glyphs.
   // Flags: flag-icons (MIT), bundled by Vite (small files are inlined as data: URIs, so CSP stays 'self' + data:).
-  import br from 'flag-icons/flags/4x3/br.svg'
-  import cn from 'flag-icons/flags/4x3/cn.svg'
-  import es from 'flag-icons/flags/4x3/es.svg'
-  import fr from 'flag-icons/flags/4x3/fr.svg'
-  import gb from 'flag-icons/flags/4x3/gb.svg'
-  import inFlag from 'flag-icons/flags/4x3/in.svg'
-  import it from 'flag-icons/flags/4x3/it.svg'
-  import jp from 'flag-icons/flags/4x3/jp.svg'
-  import us from 'flag-icons/flags/4x3/us.svg'
-  import { groupVoices, voiceInfo } from './voices'
+  import { FLAGS } from './flags'
+  import { groupVoices, type VoiceDetail } from './voices'
 
-  const FLAGS: Record<string, string> = { br, cn, es, fr, gb, in: inFlag, it, jp, us }
-
-  let { voices, value = $bindable() }: { voices: string[]; value: string | null } = $props()
+  let {
+    voices,
+    details = [],
+    packNames = {},
+    value = $bindable(),
+  }: { voices: string[]; details?: VoiceDetail[]; packNames?: Record<string, string>; value: string | null } = $props()
 
   const uid = `voice-${Math.random().toString(36).slice(2)}`
-  const groups = $derived(groupVoices(voices))
+  const groups = $derived(groupVoices(voices, details, packNames))
   const flat = $derived(groups.flatMap((g) => g.voices))
-  const current = $derived(value ? voiceInfo(value) : null)
+  const current = $derived(flat.find((v) => v.id === value) ?? null)
 
   let open = $state(false)
   let active = $state(0)
@@ -120,10 +115,10 @@
       aria-activedescendant={`${uid}-${active}`}
       onkeydown={onListKey}
     >
-      {#each groups as g (g.language)}
+      {#each groups as g (g.name)}
         <li role="presentation">
-          <ul role="group" aria-label={g.language}>
-            <li role="presentation" class="voice-group">{@render flag(g.country)} {g.language}</li>
+          <ul role="group" aria-label={g.name}>
+            <li role="presentation" class="voice-group">{@render flag(g.country)} {g.name}</li>
             {#each g.voices as v (v.id)}
               {@const i = flat.indexOf(v)}
               <!-- svelte-ignore a11y_click_events_have_key_events (keyboard is handled on the listbox via aria-activedescendant) -->

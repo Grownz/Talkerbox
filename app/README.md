@@ -31,6 +31,25 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   `/resolve/` links) or any direct URL to a `.pt`/`.npy`/`.npz`/`.bin` file of at most 50 MB. Files are stored in
   `tts\voices` in the local app data dir. The sidecar gets `--voices-dir` when that folder holds a voice file, and a
   running sidecar is restarted after a voice is added or deleted. The voice id is the file stem.
+- **Language packs** (Kokoro fine-tunes for other languages): "Add model or voice from link…" picks the action from
+  the file extension. Voice files are installed as above. An `.onnx` link opens a "New language pack" dialog with these
+  fields:
+  - pack name (suggested from the repo or file name)
+  - espeak-ng language code (dropdown of common codes, free text allowed; suggested from HuggingFace repo tags
+    within 5 s)
+  - optional vocab JSON link
+  - voice links, one per line
+
+  Everything goes into `tts\packs\<id>\` (model max 1 GB, voices max 50 MB). `pack.json` is written last, so the
+  sidecar never sees a half-installed pack, and a failed or cancelled install removes the folder. The id is a slug of
+  the name with `-2`, `-3`, … added on collision. Installed packs are listed with their flag and voices, with "Add voice
+  to this pack" and "Delete pack". `.pth`, `.safetensors` and `.ckpt` links are rejected: only ONNX fine-tunes are
+  supported, with no conversion. The sidecar gets `--packs-dir` when at least one pack is installed and is restarted
+  after every pack change.
+- **Fallback hint**: a voice without a pack whose language is unknown is spoken with the base model. When the sidecar
+  reports this (`details[].fallback` from `/voices`, or `X-TTS-Fallback: 1` on a synthesize response), a single hint
+  appears under the chat toolbar while that voice is selected. `tts_synthesize` passes the header to the webview as a
+  leading flag byte before the WAV.
 - **Ollama terminal**: the `>_` button next to the status LED opens a read-only view of the stdout/stderr of the
   `ollama serve` that Talkerbox started. It keeps a ring buffer of the last 5000 lines and receives new lines through
   `ollama-log` events. It scrolls automatically and pauses while you are scrolled up; Clear empties it. Output of an
@@ -125,6 +144,8 @@ src-tauri/src/
   discovery.rs       ollama.exe lookup order (unit-tested)
   hf.rs              HuggingFace link -> hf.co/user/repo[:quant] (unit-tested)
   names.rs           short display names for models (unit-tested)
+  packs.rs           language packs: pack.json, ids, listing (unit-tested)
+  term.rs            ring buffer + events for the Ollama terminal view (unit-tested)
   download.rs        resumable streaming downloads
   tts.rs             sidecar lifecycle and HTTP calls
   config.rs          settings.json

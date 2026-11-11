@@ -1,7 +1,7 @@
 // Run with `npm test` (Node's built-in test runner with TypeScript type stripping).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { groupVoices, voiceInfo } from '../src/lib/voices.ts'
+import { groupVoices, languageInfo, voiceInfo, type VoiceDetail } from '../src/lib/voices.ts'
 
 // All 54 Kokoro v1.0 voices (hexgrad/Kokoro-82M VOICES.md).
 const KOKORO_V1 = `af_heart af_alloy af_aoede af_bella af_jessica af_kore af_nicole af_nova af_river af_sarah af_sky
@@ -27,6 +27,8 @@ test('labels and languages', () => {
     country: 'us',
     gender: 'female',
     label: 'Heart (female)',
+    group: 'American English',
+    fallback: false,
   })
   assert.equal(voiceInfo('bm_george').country, 'gb')
   assert.equal(voiceInfo('pm_alex').language, 'Brazilian Portuguese')
@@ -43,11 +45,41 @@ test('unknown voices fall back to a globe', () => {
 test('grouping keeps language order and puts unknown last', () => {
   const g = groupVoices(['custom', 'bf_emma', 'af_heart', 'af_bella'])
   assert.deepEqual(
-    g.map((x) => [x.language, x.voices.map((v) => v.id)]),
+    g.map((x) => [x.name, x.voices.map((v) => v.id)]),
     [
       ['American English', ['af_heart', 'af_bella']],
       ['British English', ['bf_emma']],
       ['Other', ['custom']],
     ],
   )
+})
+
+test('espeak codes map to flags, with base-code fallback', () => {
+  assert.equal(languageInfo('de')?.country, 'de')
+  assert.equal(languageInfo('de-AT')?.country, 'de')
+  assert.equal(languageInfo('ko')?.country, 'kr')
+  assert.equal(languageInfo('uk')?.country, 'ua')
+  assert.equal(languageInfo('cs')?.country, 'cz')
+  assert.equal(languageInfo('xx'), null)
+  assert.equal(languageInfo(null), null)
+})
+
+test('pack voices use the pack language and are grouped by pack name', () => {
+  const details: VoiceDetail[] = [
+    { id: 'martin', pack: 'de-martin', language: 'de', fallback: false },
+    { id: 'af_heart', pack: null, language: 'en-us', fallback: false },
+    { id: 'xm_odd', pack: null, language: null, fallback: true },
+    { id: 'anna', pack: 'pl-anna', language: 'pl', fallback: false },
+  ]
+  const g = groupVoices(['xm_odd', 'anna', 'martin', 'af_heart'], details, { 'de-martin': 'German (Martin)' })
+  assert.deepEqual(
+    g.map((x) => [x.name, x.country, x.voices.map((v) => v.label)]),
+    [
+      ['American English', 'us', ['Heart (female)']],
+      ['German (Martin)', 'de', ['martin']],
+      ['Polish', 'pl', ['anna']], // pack name unknown -> language name
+      ['Other', null, ['Odd (male)']],
+    ],
+  )
+  assert.equal(voiceInfo('xm_odd', details[2]).fallback, true)
 })

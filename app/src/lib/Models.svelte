@@ -1,6 +1,19 @@
 <script lang="ts">
   import { ask, open } from '@tauri-apps/plugin-dialog'
-  import { api, errText, formatBytes, progressText, type ModelInfo, type TtsFile, type TtsStatus } from './api'
+  import {
+    api,
+    errText,
+    formatBytes,
+    progressText,
+    type LinkInfo,
+    type ModelInfo,
+    type Pack,
+    type TtsFile,
+    type TtsStatus,
+  } from './api'
+  import { FLAGS } from './flags'
+  import PackDialog from './PackDialog.svelte'
+  import { languageInfo } from './voices'
   import { Job } from './job.svelte'
   import JobStatus from './JobStatus.svelte'
 
@@ -107,12 +120,78 @@
     loadCustomVoices()
   })
 
-  async function addVoice() {
+  // Packs
+  let packs = $state<Pack[]>([])
+  let packDialog = $state<{ url: string; info: LinkInfo } | null>(null)
+  let linkChecking = $state(false)
+  let packVoiceFor = $state<string | null>(null)
+  let packVoiceUrl = $state('')
+  const packVoiceJob = new Job()
+
+  async function loadPacks() {
+    packs = await api.listPacks().catch(() => [])
+  }
+  $effect(() => {
+    loadPacks()
+  })
+
+  /** Voice links install directly; .onnx models open the language-pack dialog. */
+  async function addFromLink() {
+    voiceJob.error = ''
+    voiceJob.result = ''
+    linkChecking = true
+    let info: LinkInfo
+    try {
+      info = await api.ttsLinkInfo(voiceUrl)
+    } catch (e) {
+      voiceJob.error = errText(e)
+      return
+    } finally {
+      linkChecking = false
+    }
+    if (info.kind === 'model') {
+      packDialog = { url: voiceUrl.trim(), info }
+      return
+    }
+    if (info.kind === 'vocab') {
+      voiceJob.error = 'A vocab file belongs to a language pack: add the .onnx model link first.'
+      return
+    }
     if (await voiceJob.run((id, p) => api.downloadVoice(id, voiceUrl, p), 'Voice installed.')) {
       voiceUrl = ''
       showVoiceInput = false
     }
     await loadCustomVoices()
+    onModelsChanged()
+  }
+
+  async function packCreated() {
+    packDialog = null
+    voiceUrl = ''
+    showVoiceInput = false
+    await loadPacks()
+    onModelsChanged()
+  }
+
+  async function addPackVoice(packId: string) {
+    if (await packVoiceJob.run((id, p) => api.addPackVoice(id, packId, packVoiceUrl, p), 'Voice added to pack.')) {
+      packVoiceUrl = ''
+      packVoiceFor = null
+    }
+    await loadPacks()
+    onModelsChanged()
+  }
+
+  async function removePack(p: Pack) {
+    if (!(await ask(`Delete the language pack "${p.name}" with its model and voices?`, { title: 'Delete pack', kind: 'warning' })))
+      return
+    ttsError = ''
+    try {
+      await api.deletePack(p.id)
+    } catch (e) {
+      ttsError = errText(e)
+    }
+    await loadPacks()
     onModelsChanged()
   }
 
@@ -248,11 +327,42 @@
   {/if}
   <JobStatus job={ttsJob} text={progressText(ttsJob.progress)} />
 
-  <h3>Extra voices</h3>
+  <h3>Extra voices and language packs</h3>
   <p class="muted">
-    Kokoro voice files (.pt, .npy, .npz, .bin, max 50 MB) from a HuggingFace link or any direct URL. The voice id is the
-    file name without extension, e.g. <code>af_custom</code>.
+    Paste a HuggingFace link or any direct URL. Voice files (.pt, .npy, .npz, .bin, max 50 MB) are added to the base
+    model; the voice id is the file name without extension, e.g. <code>af_custom</code>. A Kokoro fine-tune model
+    (.onnx, max 1 GB) becomes a language pack with its own voices. PyTorch checkpoints (.pth, .safetensors) are not
+    supported.
   </p>
+  {#if packs.length}
+    <ul class="voice-files">
+      {#each packs as p (p.id)}
+        {@const lang = languageInfo(p.language)}
+        <li class="pack">
+          <div class="row">
+            {#if lang && FLAGS[lang.country]}<img class="flag" src={FLAGS[lang.country]} alt="" />{/if}
+            <strong>{p.name}</strong>
+            <span class="muted">{lang?.name ?? p.language} · {p.voices.map((v) => v.replace(/\.[^.]+$/, '')).join(', ')}</span>
+            <button class="ghost" disabled={packVoiceJob.busy} onclick={() => (packVoiceFor = packVoiceFor === p.id ? null : p.id)}>
+              Add voice to this pack
+            </button>
+            <button class="ghost danger" disabled={packVoiceJob.busy} onclick={() => removePack(p)}>Delete pack</button>
+          </div>
+          {#if packVoiceFor === p.id}
+            <div class="row">
+              <input bind:value={packVoiceUrl} placeholder="Voice link (.pt, .npy, .npz, .bin)" disabled={packVoiceJob.busy} />
+              {#if packVoiceJob.busy}
+                <button onclick={() => packVoiceJob.cancel()}>Cancel</button>
+              {:else}
+                <button onclick={() => addPackVoice(p.id)} disabled={!packVoiceUrl.trim()}>Download</button>
+              {/if}
+            </div>
+            <JobStatus job={packVoiceJob} text={progressText(packVoiceJob.progress)} />
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  {/if}
   {#if customVoices.length}
     <ul class="voice-files">
       {#each customVoices as v (v.name)}
@@ -273,12 +383,18 @@
       {#if voiceJob.busy}
         <button onclick={() => voiceJob.cancel()}>Cancel</button>
       {:else}
-        <button onclick={addVoice} disabled={!voiceUrl.trim()}>Download</button>
+        <button onclick={addFromLink} disabled={!voiceUrl.trim() || linkChecking}>Download</button>
         <button class="ghost" onclick={() => (showVoiceInput = false)}>Close</button>
       {/if}
     </div>
   {:else}
-    <div class="row"><button class="ghost" onclick={() => (showVoiceInput = true)}>Add voice from link…</button></div>
+    <div class="row">
+      <button class="ghost" onclick={() => (showVoiceInput = true)}>Add model or voice from link…</button>
+    </div>
   {/if}
   <JobStatus job={voiceJob} text={progressText(voiceJob.progress)} />
 </section>
+
+{#if packDialog}
+  <PackDialog modelUrl={packDialog.url} info={packDialog.info} onClose={() => (packDialog = null)} onCreated={packCreated} />
+{/if}

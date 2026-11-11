@@ -444,6 +444,10 @@ progress {
   gap: 8px;
 }
 
+.banner.warn {
+  background: color-mix(in srgb, #d97706 16%, transparent);
+}
+
 .banner.error {
   background: color-mix(in srgb, var(--error) 12%, transparent);
 }
@@ -487,6 +491,11 @@ h3 {
   list-style: none;
 }
 
+.voice-files li.pack {
+  flex-direction: column;
+  align-items: stretch;
+}
+
 .voice-files li {
   display: flex;
   align-items: center;
@@ -526,4 +535,9 @@ button.icon svg {
 
 .modal label {
   display: flex;
+}
+
+.modal label.stack {
+  flex-direction: column;
+  align-items: stretch;
 }

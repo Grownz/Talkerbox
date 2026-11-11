@@ -1,6 +1,15 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
-  import { api, errText, newOpId, type ChatMessage, type ModelInfo, type Settings, type TtsStatus } from './api'
+  import {
+    api,
+    errText,
+    newOpId,
+    type ChatMessage,
+    type ModelInfo,
+    type Settings,
+    type TtsStatus,
+    type VoiceDetail,
+  } from './api'
   import { finalRate, formatRate, liveRate } from './rate'
   import { Speaker } from './speaker'
   import VoicePicker from './VoicePicker.svelte'
@@ -17,10 +26,21 @@
   let tts = $state<TtsStatus | null>(null)
   let ttsBusy = $state(false)
   let voices = $state<string[]>([])
+  let voiceDetails = $state<VoiceDetail[]>([])
+  let packNames = $state<Record<string, string>>({})
+  // Voice for which a synthesize response reported X-TTS-Fallback.
+  let fallbackSeenFor = $state<string | null>(null)
   let log: HTMLElement | undefined = $state()
 
   const speaker = new Speaker()
   speaker.onError = (m) => (error = m)
+  speaker.onFallback = (v) => (fallbackSeenFor = v)
+
+  // One persistent hint for the selected voice instead of a message per sentence.
+  const usingFallback = $derived(
+    !!settings.voice &&
+      (voiceDetails.some((d) => d.id === settings.voice && d.fallback) || fallbackSeenFor === settings.voice),
+  )
 
   $effect(() => {
     void modelsVersion
@@ -54,7 +74,10 @@
 
   async function loadVoices() {
     try {
-      voices = await api.ttsVoices()
+      const list = await api.ttsVoices()
+      voices = list.voices
+      voiceDetails = list.details
+      packNames = Object.fromEntries((await api.listPacks().catch(() => [])).map((p) => [p.id, p.name]))
       if (!settings.voice || !voices.includes(settings.voice)) {
         settings.voice = voices.includes('af_heart') ? 'af_heart' : (voices[0] ?? null)
       }
@@ -175,7 +198,7 @@
     {ttsBusy ? 'Starting speech…' : 'Speak replies'}
   </label>
   {#if settings.ttsEnabled && tts?.running}
-    <VoicePicker {voices} bind:value={settings.voice} />
+    <VoicePicker {voices} details={voiceDetails} {packNames} bind:value={settings.voice} />
     <label title="Speech speed">
       Speed {settings.ttsSpeed.toFixed(1)}
       <input type="range" min="0.5" max="2" step="0.1" bind:value={settings.ttsSpeed} />
@@ -185,6 +208,12 @@
 </div>
 
 {#if error}<div class="banner error" role="alert">{error}</div>{/if}
+{#if settings.ttsEnabled && tts?.running && usingFallback}
+  <div class="banner warn" role="status">
+    No fine-tune model installed for this voice - using the base model, pronunciation may be wrong. Add a language pack
+    in Models.
+  </div>
+{/if}
 
 <div class="log" bind:this={log}>
   {#if !running}

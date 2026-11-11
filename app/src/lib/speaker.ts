@@ -18,6 +18,8 @@ export class Speaker {
   voice = ''
   speed = 1
   onError: (msg: string) => void = () => {}
+  /** The sidecar reported (X-TTS-Fallback) that it used the base model for this voice. */
+  onFallback: (voice: string) => void = () => {}
 
   private ctx: AudioContext | null = null
   private pending = ''
@@ -75,7 +77,8 @@ export class Speaker {
       while (this.queue.length && gen === this.gen) {
         const text = this.queue.shift()!
         try {
-          const wav = await api.ttsSynthesize(text, this.voice, this.speed)
+          const { wav, fallback } = await api.ttsSynthesize(text, this.voice, this.speed)
+          if (fallback) this.onFallback(this.voice)
           if (gen !== this.gen) break
           this.unlock()
           const buf = await this.ctx!.decodeAudioData(wav)

@@ -4,6 +4,7 @@ mod download;
 mod hf;
 mod names;
 mod ollama;
+mod packs;
 mod term;
 mod tts;
 
@@ -492,6 +493,176 @@ async fn restart_tts_if_running(app: &AppHandle, state: &State<'_, AppState>) ->
     Ok(())
 }
 
+fn packs_dir(app: &AppHandle) -> Res<PathBuf> {
+    Ok(data_dir(app)?.join("tts").join("packs"))
+}
+
+#[derive(Serialize)]
+struct LinkInfo {
+    kind: tts::LinkKind,
+    /// Suggested pack name (model links only).
+    name: String,
+    /// Candidate language codes from HuggingFace tags (model links only, may be empty).
+    languages: Vec<String>,
+}
+
+/// Classifies a TTS link; for .onnx models also suggests a pack name and languages (HF API, 5 s timeout).
+#[tauri::command]
+async fn tts_link_info(state: State<'_, AppState>, url: String) -> Res<LinkInfo> {
+    let kind = tts::link_kind(&url)?;
+    let mut info = LinkInfo { kind, name: String::new(), languages: Vec::new() };
+    if info.kind == tts::LinkKind::Model {
+        let (u, file) = download::safe_file_name(tts::direct_url(&url)?.as_ref())?;
+        let repo = names::hf_repo_from_url(&u);
+        info.name = names::for_import(repo.as_deref(), &file);
+        if let Some(repo) = repo {
+            let api = format!("https://huggingface.co/api/models/{repo}");
+            let resp = state.http.get(api).timeout(Duration::from_secs(5)).send().await.ok().and_then(|r| r.error_for_status().ok());
+            if let Some(v) = match resp {
+                Some(r) => r.json::<serde_json::Value>().await.ok(),
+                None => None,
+            } {
+                let tags: Vec<String> = serde_json::from_value(v["tags"].clone()).unwrap_or_default();
+                info.languages = packs::languages_from_tags(&tags);
+            }
+        }
+    }
+    Ok(info)
+}
+
+#[tauri::command]
+fn list_packs(app: AppHandle) -> Res<Vec<packs::Pack>> {
+    Ok(packs::list(&packs_dir(&app)?).into_iter().map(|(_, p)| p).collect())
+}
+
+/// Downloads `url` into `folder`, labelling progress; returns the stored file name, or None if cancelled.
+async fn fetch_into(
+    state: &AppState,
+    notify: &Notify,
+    url: String,
+    folder: &Path,
+    max: u64,
+    label: &str,
+    ch: &Channel<Progress>,
+) -> Res<Option<String>> {
+    let (u, file) = download::safe_file_name(&url)?;
+    let on = |p: Progress| send(ch, Progress { message: format!("{label}: {}", p.message), ..p });
+    if download::download(&state.http, u, &folder.join(&file), Some(max), notify, on).await? {
+        return Ok(None);
+    }
+    Ok(Some(file))
+}
+
+/// Creates a language pack: downloads the ONNX model, optional vocab and voices into `tts/packs/<id>`,
+/// writes pack.json last (so the sidecar never sees half a pack) and restarts a running sidecar.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn create_pack(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+    language: String,
+    model_url: String,
+    vocab_url: Option<String>,
+    voice_urls: Vec<String>,
+    on_progress: Channel<Progress>,
+) -> Res<bool> {
+    let name = name.trim().to_string();
+    let language = language.trim().to_lowercase();
+    if name.is_empty() {
+        return Err("Please enter a pack name".into());
+    }
+    if !packs::valid_language(&language) {
+        return Err("Language must be an espeak-ng code such as de or pt-br".into());
+    }
+    let model_url = tts::url_of_kind(&model_url, tts::LinkKind::Model)?;
+    let vocab_url = vocab_url.filter(|v| !v.trim().is_empty()).map(|v| tts::url_of_kind(&v, tts::LinkKind::Vocab)).transpose()?;
+    let voice_urls = voice_urls.iter().filter(|v| !v.trim().is_empty()).map(|v| tts::voice_url(v)).collect::<Res<Vec<_>>>()?;
+    if voice_urls.is_empty() {
+        return Err("Add at least one voice link".into());
+    }
+    let root = packs_dir(&app)?;
+    let pack_id = packs::unique_id(&name, |c| root.join(c).exists());
+    let folder = root.join(&pack_id);
+    std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+
+    let result: Res<Option<packs::Pack>> = async {
+        let op = state.op(&id);
+        let Some(model) = fetch_into(&state, &op.notify, model_url, &folder, tts::MAX_MODEL_BYTES, "Model", &on_progress).await? else {
+            return Ok(None);
+        };
+        let vocab = match vocab_url {
+            Some(u) => match fetch_into(&state, &op.notify, u, &folder, tts::MAX_VOCAB_BYTES, "Vocab", &on_progress).await? {
+                Some(f) => Some(f),
+                None => return Ok(None),
+            },
+            None => None,
+        };
+        let mut voices = Vec::new();
+        for (n, u) in voice_urls.into_iter().enumerate() {
+            let label = format!("Voice {}", n + 1);
+            let Some(f) = fetch_into(&state, &op.notify, u, &folder, tts::MAX_VOICE_BYTES, &label, &on_progress).await? else {
+                return Ok(None);
+            };
+            if !voices.contains(&f) {
+                voices.push(f);
+            }
+        }
+        Ok(Some(packs::Pack { id: pack_id.clone(), name, language, model, vocab, voices }))
+    }
+    .await;
+
+    match result {
+        Ok(Some(pack)) => {
+            packs::write_manifest(&folder, &pack)?;
+            send(&on_progress, Progress { message: "Restarting TTS to load the pack".into(), completed: None, total: None });
+            restart_tts_if_running(&app, &state).await?;
+            Ok(false)
+        }
+        // Cancelled or failed: remove the incomplete pack folder.
+        other => {
+            let _ = std::fs::remove_dir_all(&folder);
+            other.map(|_| true)
+        }
+    }
+}
+
+fn find_pack(app: &AppHandle, pack_id: &str) -> Res<(PathBuf, packs::Pack)> {
+    packs::list(&packs_dir(app)?).into_iter().find(|(_, p)| p.id == pack_id).ok_or_else(|| "No such pack".into())
+}
+
+#[tauri::command]
+async fn add_pack_voice(app: AppHandle, state: State<'_, AppState>, id: String, pack_id: String, url: String, on_progress: Channel<Progress>) -> Res<bool> {
+    let (folder, mut pack) = find_pack(&app, &pack_id)?;
+    let url = tts::voice_url(&url)?;
+    {
+        let op = state.op(&id);
+        let Some(f) = fetch_into(&state, &op.notify, url, &folder, tts::MAX_VOICE_BYTES, "Voice", &on_progress).await? else {
+            return Ok(true);
+        };
+        if !pack.voices.contains(&f) {
+            pack.voices.push(f);
+        }
+    }
+    packs::write_manifest(&folder, &pack)?;
+    restart_tts_if_running(&app, &state).await?;
+    Ok(false)
+}
+
+#[tauri::command]
+async fn delete_pack(app: AppHandle, state: State<'_, AppState>, pack_id: String) -> Res<()> {
+    let (folder, _) = find_pack(&app, &pack_id)?;
+    // Stop first: the sidecar may hold the model file open.
+    let was_running = state.tts.lock().unwrap().port.is_some();
+    stop_tts_proc(&state);
+    std::fs::remove_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    if was_running {
+        tts_start(app.clone(), state.clone()).await?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn list_custom_voices(app: AppHandle) -> Res<Vec<TtsFile>> {
     Ok(tts::custom_voices(&voices_dir(&app)?).iter().map(|p| tts_file(p)).collect())
@@ -527,7 +698,7 @@ async fn tts_start(app: AppHandle, state: State<'_, AppState>) -> Res<TtsStatus>
     if state.tts.lock().unwrap().port.is_none() {
         let exe = tts::sidecar_path()?;
         let (model, voices) = tts::model_files(&tts_dir(&app)?.0).ok_or("Kokoro model files are missing; download them in the Models view")?;
-        let (child, port) = tts::spawn(&exe, &model, &voices, tts::voices_dir_arg(&voices_dir(&app)?), &data_dir(&app)?.join("logs").join("sidecar.log"))?;
+        let (child, port) = tts::spawn(&exe, &model, &voices, tts::voices_dir_arg(&voices_dir(&app)?), packs::dir_arg(&packs_dir(&app)?), &data_dir(&app)?.join("logs").join("sidecar.log"))?;
         state.track(&child);
         state.tts.lock().unwrap().child = Some(child);
         let ready = tts::wait_ready(&state.http, port, || state.tts.lock().unwrap().child.as_mut().and_then(exited)).await;
@@ -564,15 +735,20 @@ fn tts_port(state: &AppState) -> Res<u16> {
 }
 
 #[tauri::command]
-async fn tts_voices(state: State<'_, AppState>) -> Res<Vec<String>> {
+async fn tts_voices(state: State<'_, AppState>) -> Res<tts::VoiceList> {
     tts::voices(&state.http, tts_port(&state)?).await
 }
 
-/// Returns WAV bytes as a raw binary IPC response.
+/// Raw binary IPC response: one flag byte (1 = sidecar used the base model as fallback) followed by the WAV.
+/// A binary response cannot carry headers, so the flag travels in-band.
 #[tauri::command]
 async fn tts_synthesize(state: State<'_, AppState>, text: String, voice: String, speed: f32) -> Res<Response> {
     let speed = speed.clamp(0.5, 2.0);
-    Ok(Response::new(tts::synthesize(&state.http, tts_port(&state)?, &text, &voice, speed).await?))
+    let (wav, fallback) = tts::synthesize(&state.http, tts_port(&state)?, &text, &voice, speed).await?;
+    let mut out = Vec::with_capacity(wav.len() + 1);
+    out.push(u8::from(fallback));
+    out.extend_from_slice(&wav);
+    Ok(Response::new(out))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -614,6 +790,11 @@ pub fn run() {
             list_custom_voices,
             download_voice,
             delete_custom_voice,
+            tts_link_info,
+            list_packs,
+            create_pack,
+            add_pack_voice,
+            delete_pack,
             tts_start,
             tts_stop,
             tts_voices,

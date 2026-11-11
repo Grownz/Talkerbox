@@ -2,7 +2,7 @@
 //! Contract: `--port <n> --model <onnx> --voices <bin>`; GET /health, GET /voices, POST /synthesize -> audio/wav.
 
 use crate::net_err;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -61,29 +61,75 @@ pub fn model_files(dir: &Path) -> Option<(PathBuf, PathBuf)> {
 pub const VOICE_EXTS: [&str; 4] = ["pt", "npy", "npz", "bin"];
 pub const MAX_VOICE_BYTES: u64 = 50 << 20;
 
-fn has_voice_ext(name: &str) -> bool {
-    name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && VOICE_EXTS.iter().any(|e| e.eq_ignore_ascii_case(ext)))
+pub const MAX_MODEL_BYTES: u64 = 1 << 30;
+pub const MAX_VOCAB_BYTES: u64 = 10 << 20;
+
+fn has_ext(name: &str, exts: &[&str]) -> bool {
+    name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && exts.iter().any(|e| e.eq_ignore_ascii_case(ext)))
 }
 
-/// Turns a voice link into a direct download URL: HuggingFace `.../blob/<rev>/<path>` pages become
-/// `.../resolve/<rev>/<path>`. Returns the URL and the file name; only voice file extensions are accepted.
-pub fn voice_url(input: &str) -> Result<String, String> {
-    let s = input.trim();
-    let mut u = reqwest::Url::parse(s).map_err(|e| format!("Invalid URL: {e}"))?;
+fn has_voice_ext(name: &str) -> bool {
+    has_ext(name, &VOICE_EXTS)
+}
+
+/// Direct download URL for a link: HuggingFace `.../blob/<rev>/<path>` pages become `.../resolve/<rev>/<path>`.
+pub fn direct_url(input: &str) -> Result<reqwest::Url, String> {
+    let mut u = reqwest::Url::parse(input.trim()).map_err(|e| format!("Invalid URL: {e}"))?;
     let host = u.host_str().unwrap_or("").trim_start_matches("www.").to_string();
     if host == "huggingface.co" || host == "hf.co" {
-        let segs: Vec<String> = u.path_segments().map(|s| s.map(str::to_owned).collect()).unwrap_or_default();
+        let mut segs: Vec<String> = u.path_segments().map(|s| s.map(str::to_owned).collect()).unwrap_or_default();
         if segs.get(2).is_some_and(|s| s == "blob") {
-            let mut segs = segs;
             segs[2] = "resolve".into();
             u.set_path(&segs.join("/"));
         }
     }
-    let file = u.path_segments().and_then(|mut s| s.next_back()).unwrap_or("");
-    if !has_voice_ext(file) {
-        return Err(format!("Voice files must end in .{}", VOICE_EXTS.join(", .")));
+    Ok(u)
+}
+
+fn file_of(u: &reqwest::Url) -> &str {
+    u.path_segments().and_then(|mut s| s.next_back()).unwrap_or("")
+}
+
+/// What a TTS link points to, by file extension.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkKind {
+    Voice,
+    Model,
+    Vocab,
+}
+
+pub fn link_kind(input: &str) -> Result<LinkKind, String> {
+    let u = direct_url(input)?;
+    let f = file_of(&u);
+    if has_voice_ext(f) {
+        Ok(LinkKind::Voice)
+    } else if has_ext(f, &["onnx"]) {
+        Ok(LinkKind::Model)
+    } else if has_ext(f, &["json"]) {
+        Ok(LinkKind::Vocab)
+    } else if has_ext(f, &["pth", "safetensors", "ckpt"]) {
+        Err("This is a PyTorch checkpoint. Only ONNX Kokoro fine-tunes (.onnx) are supported; Talkerbox does not convert models.".into())
+    } else {
+        Err("Unsupported link: expected a voice (.pt, .npy, .npz, .bin) or an ONNX model (.onnx)".into())
     }
-    Ok(u.to_string())
+}
+
+/// Validated direct URL of the expected kind.
+pub fn url_of_kind(input: &str, kind: LinkKind) -> Result<String, String> {
+    let k = link_kind(input)?;
+    if k != kind {
+        return Err(match kind {
+            LinkKind::Voice => format!("Voice files must end in .{}", VOICE_EXTS.join(", .")),
+            LinkKind::Model => "The model link must point to an .onnx file".into(),
+            LinkKind::Vocab => "The vocab link must point to a .json file".into(),
+        });
+    }
+    Ok(direct_url(input)?.to_string())
+}
+
+pub fn voice_url(input: &str) -> Result<String, String> {
+    url_of_kind(input, LinkKind::Voice)
 }
 
 /// Optional folder of extra voices, passed to the sidecar only when it holds at least one voice file.
@@ -106,12 +152,22 @@ fn free_port() -> Result<u16, String> {
     l.local_addr().map(|a| a.port()).map_err(|e| e.to_string())
 }
 
-pub fn spawn(exe: &Path, model: &Path, voices: &Path, voices_dir: Option<&Path>, log: &Path) -> Result<(Child, u16), String> {
+pub fn spawn(
+    exe: &Path,
+    model: &Path,
+    voices: &Path,
+    voices_dir: Option<&Path>,
+    packs_dir: Option<&Path>,
+    log: &Path,
+) -> Result<(Child, u16), String> {
     let port = free_port()?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--port").arg(port.to_string()).arg("--model").arg(model).arg("--voices").arg(voices);
     if let Some(d) = voices_dir {
         cmd.arg("--voices-dir").arg(d);
+    }
+    if let Some(d) = packs_dir {
+        cmd.arg("--packs-dir").arg(d);
     }
     crate::background(&mut cmd, log)?;
     // The sidecar exits when its stdin closes. The pipe stays open while the Child is held, and closes
@@ -141,17 +197,34 @@ pub async fn wait_ready(http: &reqwest::Client, port: u16, mut exited: impl FnMu
     Err("TTS sidecar did not become ready within 60 s".into())
 }
 
-pub async fn voices(http: &reqwest::Client, port: u16) -> Result<Vec<String>, String> {
-    #[derive(Deserialize)]
-    struct V {
-        voices: Vec<String>,
-    }
-    let r = http.get(format!("http://127.0.0.1:{port}/voices")).send().await.map_err(net_err)?;
-    let r = crate::ollama::check(r).await?;
-    Ok(r.json::<V>().await.map_err(net_err)?.voices)
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VoiceDetail {
+    pub id: String,
+    #[serde(default)]
+    pub pack: Option<String>,
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Unknown language and no pack: synthesised with the base model.
+    #[serde(default)]
+    pub fallback: bool,
 }
 
-pub async fn synthesize(http: &reqwest::Client, port: u16, text: &str, voice: &str, speed: f32) -> Result<Vec<u8>, String> {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VoiceList {
+    pub voices: Vec<String>,
+    /// Missing from older sidecars.
+    #[serde(default)]
+    pub details: Vec<VoiceDetail>,
+}
+
+pub async fn voices(http: &reqwest::Client, port: u16) -> Result<VoiceList, String> {
+    let r = http.get(format!("http://127.0.0.1:{port}/voices")).send().await.map_err(net_err)?;
+    let r = crate::ollama::check(r).await?;
+    r.json::<VoiceList>().await.map_err(net_err)
+}
+
+/// Returns the WAV bytes and whether the sidecar fell back to the base model (`X-TTS-Fallback: 1`).
+pub async fn synthesize(http: &reqwest::Client, port: u16, text: &str, voice: &str, speed: f32) -> Result<(Vec<u8>, bool), String> {
     let r = http
         .post(format!("http://127.0.0.1:{port}/synthesize"))
         .json(&json!({ "text": text, "voice": voice, "speed": speed }))
@@ -160,12 +233,23 @@ pub async fn synthesize(http: &reqwest::Client, port: u16, text: &str, voice: &s
         .await
         .map_err(net_err)?;
     let r = crate::ollama::check(r).await?;
-    Ok(r.bytes().await.map_err(net_err)?.to_vec())
+    let fallback = r.headers().get("x-tts-fallback").is_some_and(|v| v.as_bytes() == b"1");
+    Ok((r.bytes().await.map_err(net_err)?.to_vec(), fallback))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::voice_url;
+    use super::{link_kind, voice_url, LinkKind};
+
+    #[test]
+    fn link_kinds() {
+        assert_eq!(link_kind("https://huggingface.co/u/r/blob/main/kokoro-de.onnx"), Ok(LinkKind::Model));
+        assert_eq!(link_kind("https://x.org/a/martin.npy"), Ok(LinkKind::Voice));
+        assert_eq!(link_kind("https://x.org/a/vocab.json"), Ok(LinkKind::Vocab));
+        assert!(link_kind("https://huggingface.co/u/r/blob/main/model.safetensors").unwrap_err().contains("ONNX"));
+        assert!(link_kind("https://x.org/a/kokoro.pth").unwrap_err().contains("ONNX"));
+        assert!(link_kind("https://x.org/a/readme.md").is_err());
+    }
 
     #[test]
     fn voice_links() {

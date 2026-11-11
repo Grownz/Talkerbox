@@ -1,5 +1,6 @@
 // Typed wrappers around the Rust commands in src-tauri/src/lib.rs.
 import { Channel, invoke } from '@tauri-apps/api/core'
+import type { VoiceDetail } from './voices'
 
 export interface Settings {
   ollamaPath: string | null
@@ -28,6 +29,24 @@ export interface ModelInfo {
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
+}
+
+export type { VoiceDetail }
+
+/** A Kokoro language pack (contents of its pack.json). */
+export interface Pack {
+  id: string
+  name: string
+  language: string
+  model: string
+  vocab?: string
+  voices: string[]
+}
+
+export interface LinkInfo {
+  kind: 'voice' | 'model' | 'vocab'
+  name: string
+  languages: string[]
 }
 
 export interface ChatResult {
@@ -110,9 +129,22 @@ export const api = {
     invoke<boolean>('download_tts_file', { id, url, onProgress: channel(onProgress) }),
   ttsStart: () => invoke<TtsStatus>('tts_start'),
   ttsStop: () => invoke<TtsStatus>('tts_stop'),
-  ttsVoices: () => invoke<string[]>('tts_voices'),
-  ttsSynthesize: (text: string, voice: string, speed: number) =>
-    invoke<ArrayBuffer>('tts_synthesize', { text, voice, speed }),
+  ttsVoices: () => invoke<{ voices: string[]; details: VoiceDetail[] }>('tts_voices'),
+  /** The backend prepends one flag byte (1 = base-model fallback) to the WAV. */
+  ttsSynthesize: async (text: string, voice: string, speed: number) => {
+    const buf = await invoke<ArrayBuffer>('tts_synthesize', { text, voice, speed })
+    return { fallback: new Uint8Array(buf, 0, 1)[0] === 1, wav: buf.slice(1) }
+  },
+  ttsLinkInfo: (url: string) => invoke<LinkInfo>('tts_link_info', { url }),
+  listPacks: () => invoke<Pack[]>('list_packs'),
+  createPack: (
+    id: string,
+    p: { name: string; language: string; modelUrl: string; vocabUrl: string | null; voiceUrls: string[] },
+    onProgress: (p: Progress) => void,
+  ) => invoke<boolean>('create_pack', { id, ...p, onProgress: channel(onProgress) }),
+  addPackVoice: (id: string, packId: string, url: string, onProgress: (p: Progress) => void) =>
+    invoke<boolean>('add_pack_voice', { id, packId, url, onProgress: channel(onProgress) }),
+  deletePack: (packId: string) => invoke<void>('delete_pack', { packId }),
 }
 
 export function errText(e: unknown): string {
