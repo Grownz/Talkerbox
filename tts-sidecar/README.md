@@ -6,8 +6,19 @@ It ships as one Windows exe and the Tauri app starts it as a sidecar.
 ## Contract
 
 ```
-tts-sidecar.exe --port <int> --model <kokoro-v1.0.onnx> --voices <voices-v1.0.bin>
+tts-sidecar.exe --port <int> --model <kokoro-v1.0.onnx> --voices <voices-v1.0.bin> [--voices-dir <dir>]
 ```
+
+`--voices-dir` is optional. It loads extra voices from the given directory, in addition to the built-in voices:
+- `*.npy`: one voice, a float array of shape (N, 1, 256). The voice id is the file stem.
+- `*.npz` / `*.bin`: a bundle in the same format as `voices-v1.0.bin`. The voice ids are its keys.
+- `*.pt`: one voice in the format of `hexgrad/Kokoro-82M/voices/*.pt`, the zip that `torch.save` writes. The voice id is the file stem.
+  It is decoded by a whitelisting unpickler that accepts only a contiguous float32 tensor. torch is not
+  used, and a malicious file cannot run code.
+
+Voice ids must match `[A-Za-z0-9_-]{1,64}`. If an extra voice has the same id as a built-in voice, the
+built-in one is kept. An invalid file, or a directory that does not exist, causes a one-line `warning:` on stderr and is
+skipped. Startup never fails because of it.
 
 - Listens on `127.0.0.1:<port>` only. `--port 0` lets the OS choose a free port.
 - Prints exactly one stdout line, `READY port=<port>`, once it is serving. Logs go to stderr.
@@ -29,7 +40,7 @@ Errors are JSON `{"error": "..."}`:
 - 404: unknown path
 
 The first letter of the voice name picks the espeak-ng language (`a` en-us, `b` en-gb, `e` es,
-`f` fr-fr, `h` hi, `i` it, `j` ja, `p` pt-br, `z` cmn). Inference calls run one at a time, guarded by a lock.
+`f` fr-fr, `h` hi, `i` it, `j` ja, `p` pt-br, `z` cmn). Any other first letter falls back to en-us. Inference calls run one at a time, guarded by a lock.
 
 ## Development
 
@@ -43,6 +54,8 @@ mkdir models
 $b = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
 curl.exe -L -o models\kokoro-v1.0.onnx "$b/kokoro-v1.0.onnx"
 curl.exe -L -o models\voices-v1.0.bin  "$b/voices-v1.0.bin"
+# optional: a real HF .pt voice, which the tests also load when it is present
+curl.exe -L -o models\hf_af_heart.pt https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/af_heart.pt
 
 .venv\Scripts\python -m pytest -s test_sidecar.py            # tests the Python source
 $env:SIDECAR_EXE = "dist\tts-sidecar.exe"; .venv\Scripts\python -m pytest -s test_sidecar.py   # tests the exe
