@@ -84,15 +84,31 @@ nav button.active {
   gap: 8px;
 }
 
-.dot {
-  width: 10px;
-  height: 10px;
+/* Status LED doubling as the Ollama start/stop control. */
+button.led {
+  width: 18px;
+  height: 18px;
+  padding: 0;
   border-radius: 50%;
+  border: 2px solid var(--border);
   background: var(--error);
 }
 
-.dot.on {
+button.led.on {
   background: var(--ok);
+}
+
+button.led:not(:disabled):hover {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+button.led:disabled {
+  opacity: 1;
+}
+
+button.led.busy {
+  background: var(--muted);
+  animation: blink 1s steps(1) infinite;
 }
 
 main {

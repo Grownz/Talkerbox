@@ -22,6 +22,8 @@
   $effect(() => {
     void modelsVersion
     if (running) loadModels()
+    // TTS files or folder may have changed in the Models view.
+    api.ttsStatus().then((s) => (tts = s), () => {})
   })
 
   // Keep the newest text visible while streaming.
@@ -134,7 +136,7 @@
   <label>
     Model
     <select bind:value={settings.lastModel} disabled={!running || !models.length}>
-      {#each models as m (m.name)}<option value={m.name}>{m.name}</option>{/each}
+      {#each models as m (m.name)}<option value={m.name} title={m.name}>{m.displayName}</option>{/each}
     </select>
   </label>
   <button class="ghost" onclick={() => (messages = [])} disabled={!!opId || !messages.length}>New chat</button>
@@ -142,7 +144,7 @@
   <label class="check"><input type="checkbox" checked={settings.ttsEnabled} onchange={toggleTts} /> Speak replies</label>
   {#if settings.ttsEnabled}
     {#if !tts?.sidecarPresent}
-      <span class="muted" title="Drop the built sidecar into src-tauri/binaries (see README)">TTS sidecar not installed</span>
+      <span class="muted" title={tts?.sidecarError ?? ''}>TTS unavailable (details in Models)</span>
     {:else if !tts.modelReady}
       <span class="muted">Download the Kokoro files in Models</span>
     {:else if !tts.running}
@@ -169,7 +171,7 @@
   {:else if !models.length}
     <p class="muted center">No models installed yet. Add one in the Models view.</p>
   {:else if !messages.length}
-    <p class="muted center">Say hello to {settings.lastModel}.</p>
+    <p class="muted center">Say hello to {models.find((m) => m.name === settings.lastModel)?.displayName ?? settings.lastModel}.</p>
   {/if}
   {#each messages as m, i (i)}
     <div class="msg {m.role}">{m.content}{#if opId && i === messages.length - 1 && m.role === 'assistant'}<span class="cursor">▍</span>{/if}</div>

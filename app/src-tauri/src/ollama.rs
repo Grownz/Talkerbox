@@ -33,6 +33,9 @@ pub struct ModelInfo {
     pub size: u64,
     #[serde(default)]
     pub details: ModelDetails,
+    /// Filled in by Talkerbox, not by Ollama.
+    #[serde(default, rename = "displayName")]
+    pub display_name: String,
 }
 
 /// Turns a non-2xx response into a readable error, preferring Ollama's `{"error": "..."}` body.

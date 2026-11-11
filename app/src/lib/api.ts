@@ -17,7 +17,10 @@ export interface OllamaStatus {
 }
 
 export interface ModelInfo {
+  /** Ollama model id (unchanged, used for API calls). */
   name: string
+  /** Short human-friendly name for display. */
+  displayName: string
   size: number
   details: { parameterSize: string | null; quantizationLevel: string | null }
 }
@@ -33,11 +36,20 @@ export interface Progress {
   total: number | null
 }
 
+export interface TtsFile {
+  name: string
+  size: number
+}
+
 export interface TtsStatus {
   sidecarPresent: boolean
+  sidecarError: string | null
   modelReady: boolean
+  modelFile: TtsFile | null
+  voicesFile: TtsFile | null
   running: boolean
   modelDir: string
+  customDir: boolean
   defaultModelUrl: string
   defaultVoicesUrl: string
 }
@@ -72,6 +84,9 @@ export const api = {
     invoke<boolean>('import_gguf_url', { id, url, modelName, onProgress: channel(onProgress) }),
 
   ttsStatus: () => invoke<TtsStatus>('tts_status'),
+  /** null = back to the default folder in the app data dir. */
+  setTtsModelDir: (path: string | null) => invoke<TtsStatus>('set_tts_model_dir', { path }),
+  deleteTtsFiles: () => invoke<TtsStatus>('delete_tts_files'),
   downloadTtsFile: (id: string, url: string, onProgress: (p: Progress) => void) =>
     invoke<boolean>('download_tts_file', { id, url, onProgress: channel(onProgress) }),
   ttsStart: () => invoke<TtsStatus>('tts_start'),

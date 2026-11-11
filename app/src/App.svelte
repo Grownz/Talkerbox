@@ -9,7 +9,17 @@
   let status = $state<OllamaStatus | null>(null)
   let tab = $state<'chat' | 'models'>('chat')
   let showPathDialog = $state(false)
-  let busy = $state(false)
+  let busy = $state<'start' | 'stop' | null>(null)
+
+  // What a click on the status LED does in the current state.
+  const ledAction = $derived.by((): { label: string; run?: () => void } => {
+    if (!status) return { label: 'Checking Ollama…' }
+    if (busy) return { label: busy === 'start' ? 'Starting Ollama…' : 'Stopping Ollama…' }
+    if (status.running && status.startedByApp) return { label: 'Ollama is running. Click to stop it.', run: () => run('stop') }
+    if (status.running) return { label: 'Ollama is running (started outside Talkerbox). Stop it from its tray icon.' }
+    if (status.exe) return { label: 'Ollama is stopped. Click to start it.', run: () => run('start') }
+    return { label: 'Ollama not found. Click to set its location.', run: () => (showPathDialog = true) }
+  })
   let error = $state('')
   // Bumped when models change so the chat view reloads its model list.
   let modelsVersion = $state(0)
@@ -22,17 +32,17 @@
     }
   }
 
-  async function run(fn: () => Promise<OllamaStatus>) {
-    busy = true
+  async function run(action: 'start' | 'stop') {
+    busy = action
     error = ''
     try {
-      status = await fn()
+      status = await (action === 'start' ? api.ollamaStart() : api.ollamaStop())
       modelsVersion++
     } catch (e) {
-      error = errText(e)
+      error = `Could not ${action} Ollama: ${errText(e)}`
       await refresh()
     } finally {
-      busy = false
+      busy = null
     }
   }
 
@@ -61,19 +71,22 @@
     <button class:active={tab === 'models'} onclick={() => (tab = 'models')}>Models</button>
   </nav>
   <div class="ollama">
-    <span class="dot" class:on={status?.running} aria-hidden="true"></span>
     <span>
       {#if !status}Checking Ollama…
+      {:else if busy}{busy === 'start' ? 'Starting Ollama…' : 'Stopping Ollama…'}
       {:else if status.running}Ollama {status.version}{status.startedByApp ? ' (started here)' : ''}
       {:else if status.exe}Ollama stopped
       {:else}Ollama not found{/if}
     </span>
-    {#if status && !status.running && status.exe}
-      <button disabled={busy} onclick={() => run(api.ollamaStart)}>{busy ? 'Starting…' : 'Start'}</button>
-    {/if}
-    {#if status?.running && status.startedByApp}
-      <button disabled={busy} onclick={() => run(api.ollamaStop)}>Stop</button>
-    {/if}
+    <button
+      class="led"
+      class:on={status?.running}
+      class:busy={!!busy}
+      disabled={!status || !!busy || (status.running && !status.startedByApp)}
+      title={ledAction.label}
+      aria-label={ledAction.label}
+      onclick={ledAction.run}
+    ></button>
     <button class="ghost" title={status?.exe ?? 'Set ollama.exe location'} onclick={() => (showPathDialog = true)}>Path…</button>
   </div>
 </header>
@@ -98,7 +111,6 @@
     onSaved={async (exe) => {
       showPathDialog = false
       if (settings) settings.ollamaPath = exe
-      await refresh()
-    }}
+      await refresh()    }}
   />
 {/if}

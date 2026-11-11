@@ -1,7 +1,9 @@
 //! Settings persisted as JSON in the Tauri app config dir.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,12 +14,48 @@ pub struct Settings {
     pub voice: Option<String>,
     pub tts_enabled: bool,
     pub tts_speed: f32,
+    /// Folder with the Kokoro files; None = `tts` in the app data dir.
+    pub tts_model_dir: Option<String>,
+    /// Display names keyed by Ollama model id.
+    pub display_names: HashMap<String, String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { ollama_path: None, last_model: None, voice: None, tts_enabled: true, tts_speed: 1.0 }
+        Self {
+            ollama_path: None,
+            last_model: None,
+            voice: None,
+            tts_enabled: true,
+            tts_speed: 1.0,
+            tts_model_dir: None,
+            display_names: HashMap::new(),
+        }
     }
+}
+
+// Serialises load-modify-save cycles from different commands.
+static LOCK: Mutex<()> = Mutex::new(());
+
+/// Applies `f` to the stored settings and saves them.
+pub fn update<R>(app: &AppHandle, f: impl FnOnce(&mut Settings) -> R) -> Result<R, String> {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut s = load(app);
+    let r = f(&mut s);
+    save(app, &s)?;
+    Ok(r)
+}
+
+/// Saves settings coming from the UI. Fields owned by backend commands keep their stored values.
+pub fn save_from_ui(app: &AppHandle, ui: Settings) -> Result<(), String> {
+    update(app, |s| {
+        *s = Settings {
+            ollama_path: s.ollama_path.take(),
+            tts_model_dir: s.tts_model_dir.take(),
+            display_names: std::mem::take(&mut s.display_names),
+            ..ui
+        }
+    })
 }
 
 fn file(app: &AppHandle) -> Result<PathBuf, String> {
@@ -30,7 +68,7 @@ pub fn load(app: &AppHandle) -> Settings {
     file(app).ok().and_then(|f| std::fs::read(f).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
-pub fn save(app: &AppHandle, s: &Settings) -> Result<(), String> {
+fn save(app: &AppHandle, s: &Settings) -> Result<(), String> {
     let f = file(app)?;
     write_atomic(&f, &serde_json::to_vec_pretty(s).map_err(|e| e.to_string())?)
 }

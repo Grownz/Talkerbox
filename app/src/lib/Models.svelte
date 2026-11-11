@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ask } from '@tauri-apps/plugin-dialog'
+  import { ask, open } from '@tauri-apps/plugin-dialog'
   import { api, errText, formatBytes, progressText, type ModelInfo, type TtsStatus } from './api'
   import { Job } from './job.svelte'
   import JobStatus from './JobStatus.svelte'
@@ -35,7 +35,8 @@
   }
 
   async function remove(name: string) {
-    if (!(await ask(`Delete model "${name}" from Ollama?`, { title: 'Delete model', kind: 'warning' }))) return
+    if (!(await ask(`Delete model "${name}" from Ollama? This cannot be undone.`, { title: 'Delete model', kind: 'warning' })))
+      return
     try {
       await api.deleteModel(name)
       await refresh()
@@ -72,6 +73,34 @@
   async function downloadTts(url: string) {
     await ttsJob.run((id, p) => api.downloadTtsFile(id, url, p), 'Downloaded.')
     tts = await api.ttsStatus().catch(() => tts)
+    if (tts?.modelReady) showTtsDownloads = false
+    onModelsChanged()
+  }
+
+  let showTtsDownloads = $state(false)
+  let ttsError = $state('')
+
+  async function ttsAction(fn: () => Promise<TtsStatus>) {
+    ttsError = ''
+    try {
+      tts = await fn()
+      onModelsChanged()
+    } catch (e) {
+      ttsError = errText(e)
+    }
+  }
+
+  async function chooseTtsDir() {
+    const dir = await open({ directory: true, title: 'Select a folder containing the Kokoro .onnx and voices .bin files' })
+    if (typeof dir === 'string') await ttsAction(() => api.setTtsModelDir(dir))
+  }
+
+  async function deleteTts() {
+    const ok = await ask('Delete the downloaded Kokoro model and voices files? You can download them again later.', {
+      title: 'Delete TTS files',
+      kind: 'warning',
+    })
+    if (ok) await ttsAction(api.deleteTtsFiles)
   }
 </script>
 
@@ -92,7 +121,7 @@
       <tbody>
         {#each models as m (m.name)}
           <tr>
-            <td>{m.name}</td>
+            <td title={m.name}>{m.displayName}{#if m.displayName !== m.name}<br /><small class="muted">{m.name}</small>{/if}</td>
             <td>{formatBytes(m.size)}</td>
             <td>{m.details.parameterSize ?? ''}</td>
             <td>{m.details.quantizationLevel ?? ''}</td>
@@ -144,22 +173,45 @@
 <section>
   <h2>Text-to-speech model (Kokoro)</h2>
   {#if tts}
-    <p class="muted">
-      Stored in <code>{tts.modelDir}</code>. Status: {tts.modelReady ? 'model and voices present' : 'files missing'}.
-      {#if !tts.sidecarPresent}The TTS sidecar is not installed, so speech stays off until it is.{/if}
-    </p>
-    <div class="row">
-      <button disabled={ttsJob.busy} onclick={() => downloadTts(tts!.defaultModelUrl)}>Download kokoro-v1.0.onnx</button>
-      <button disabled={ttsJob.busy} onclick={() => downloadTts(tts!.defaultVoicesUrl)}>Download voices-v1.0.bin</button>
-    </div>
-  {/if}
-  <div class="row">
-    <input bind:value={ttsUrl} placeholder="Other TTS file URL (.onnx / .bin)" disabled={ttsJob.busy} />
-    {#if ttsJob.busy}
-      <button onclick={() => ttsJob.cancel()}>Cancel</button>
-    {:else}
-      <button onclick={() => downloadTts(ttsUrl)} disabled={!ttsUrl.trim()}>Download</button>
+    {#if !tts.sidecarPresent}
+      <p class="error">{tts.sidecarError}</p>
     {/if}
-  </div>
+    <p class="muted">Folder: <code>{tts.modelDir}</code>{tts.customDir ? ' (your folder)' : ''}</p>
+    {#if tts.modelReady && tts.modelFile && tts.voicesFile}
+      <p class="ok">
+        Installed: {tts.modelFile.name} ({formatBytes(tts.modelFile.size)}), {tts.voicesFile.name} ({formatBytes(
+          tts.voicesFile.size,
+        )})
+      </p>
+    {:else}
+      <p class="muted">Kokoro files missing. Download them, or use a folder that already has them.</p>
+    {/if}
+    <div class="row">
+      <button class="ghost" onclick={chooseTtsDir}>Use existing folder…</button>
+      {#if tts.customDir}
+        <button class="ghost" onclick={() => ttsAction(() => api.setTtsModelDir(null))}>Use default folder</button>
+      {:else if tts.modelReady}
+        <button class="ghost" onclick={() => (showTtsDownloads = !showTtsDownloads)}>
+          {showTtsDownloads ? 'Hide downloads' : 'Re-download…'}
+        </button>
+        <button class="ghost danger" disabled={ttsJob.busy} onclick={deleteTts}>Delete files</button>
+      {/if}
+    </div>
+    {#if ttsError}<p class="error" role="alert">{ttsError}</p>{/if}
+    {#if !tts.modelReady || showTtsDownloads || ttsJob.busy}
+      <div class="row">
+        <button disabled={ttsJob.busy} onclick={() => downloadTts(tts!.defaultModelUrl)}>Download kokoro-v1.0.onnx</button>
+        <button disabled={ttsJob.busy} onclick={() => downloadTts(tts!.defaultVoicesUrl)}>Download voices-v1.0.bin</button>
+      </div>
+      <div class="row">
+        <input bind:value={ttsUrl} placeholder="Other TTS file URL (.onnx / .bin)" disabled={ttsJob.busy} />
+        {#if ttsJob.busy}
+          <button onclick={() => ttsJob.cancel()}>Cancel</button>
+        {:else}
+          <button onclick={() => downloadTts(ttsUrl)} disabled={!ttsUrl.trim()}>Download</button>
+        {/if}
+      </div>
+    {/if}
+  {/if}
   <JobStatus job={ttsJob} text={progressText(ttsJob.progress)} />
 </section>
