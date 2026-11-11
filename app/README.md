@@ -46,6 +46,17 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   to this pack" and "Delete pack". `.pth`, `.safetensors` and `.ckpt` links are rejected: only ONNX fine-tunes are
   supported, with no conversion. The sidecar gets `--packs-dir` when at least one pack is installed and is restarted
   after every pack change.
+- **Featured language packs** (`src-tauri/src/featured.rs`): one-click installs of two German Kokoro fine-tunes, both
+  Apache-2.0. They install through the same pack mechanism, so they behave exactly like user-made packs.
+  - **Martin (male)**, from `Godelaune/Kokoro-82M-ONNX-German-Martin`: the `kokoro-martin.onnx` model and
+    `voices-martin.npz` (voice `martin`).
+  - **Kerstin (female)**, from `crane-local-ai/Kokoro-82M-v1.0-German-ONNX`: the `onnx/model.onnx` model and
+    `voices/df_kerstin.bin` (voice `df_kerstin`).
+
+  File URLs and exact sizes come from the HuggingFace file trees, and every download must match its size. Kerstin's
+  voice is headerless float32 (510x1x256), so the installer wraps it in an NPY header as `df_kerstin.npy`; the sidecar
+  is unchanged. Her `tokenizer.json` vocab is kokoro-onnx's built-in vocab plus the `$` pad token at id 0, and every
+  espeak-ng `de` phoneme of a test sentence is in it, so no vocab file is installed.
 - **Fallback hint**: a voice without a pack whose language is unknown is spoken with the base model. When the sidecar
   reports this (`details[].fallback` from `/voices`, or `X-TTS-Fallback: 1` on a synthesize response), a single hint
   appears under the chat toolbar while that voice is selected. `tts_synthesize` passes the header to the webview as a

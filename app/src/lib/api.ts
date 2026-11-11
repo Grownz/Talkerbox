@@ -43,6 +43,17 @@ export interface Pack {
   voices: string[]
 }
 
+/** Curated one-click language pack (see src-tauri/src/featured.rs). */
+export interface FeaturedPack {
+  id: string
+  name: string
+  language: string
+  license: string
+  source: string
+  totalSize: number
+  installed: boolean
+}
+
 export interface LinkInfo {
   kind: 'voice' | 'model' | 'vocab'
   name: string
@@ -145,6 +156,9 @@ export const api = {
   addPackVoice: (id: string, packId: string, url: string, onProgress: (p: Progress) => void) =>
     invoke<boolean>('add_pack_voice', { id, packId, url, onProgress: channel(onProgress) }),
   deletePack: (packId: string) => invoke<void>('delete_pack', { packId }),
+  listFeatured: () => invoke<FeaturedPack[]>('list_featured'),
+  installFeatured: (id: string, featuredId: string, onProgress: (p: Progress) => void) =>
+    invoke<boolean>('install_featured', { id, featuredId, onProgress: channel(onProgress) }),
 }
 
 export function errText(e: unknown): string {

@@ -5,6 +5,7 @@
     errText,
     formatBytes,
     progressText,
+    type FeaturedPack,
     type LinkInfo,
     type ModelInfo,
     type Pack,
@@ -130,6 +131,18 @@
 
   async function loadPacks() {
     packs = await api.listPacks().catch(() => [])
+    featured = await api.listFeatured().catch(() => [])
+  }
+
+  // Featured packs: one Job per pack so both can be installed (also at the same time).
+  let featured = $state<FeaturedPack[]>([])
+  const featuredJobs: Record<string, Job> = {}
+  const featuredJob = (id: string) => (featuredJobs[id] ??= new Job())
+
+  async function installFeatured(f: FeaturedPack) {
+    await featuredJob(f.id).run((id, p) => api.installFeatured(id, f.id, p), `${f.name} installed.`)
+    await loadPacks()
+    onModelsChanged()
   }
   $effect(() => {
     loadPacks()
@@ -326,6 +339,31 @@
     {/if}
   {/if}
   <JobStatus job={ttsJob} text={progressText(ttsJob.progress)} />
+
+  {#if featured.length}
+    <h3>Featured language packs</h3>
+    <ul class="voice-files">
+      {#each featured as f (f.id)}
+        {@const lang = languageInfo(f.language)}
+        {@const job = featuredJob(f.id)}
+        <li class="pack">
+          <div class="row">
+            {#if lang && FLAGS[lang.country]}<img class="flag" src={FLAGS[lang.country]} alt="" />{/if}
+            <strong>{f.name}</strong>
+            <span class="muted">{formatBytes(f.totalSize)} · {f.license} · <code title="Source">{f.source}</code></span>
+            {#if f.installed}
+              <button disabled title="Delete it in the pack list below">Installed</button>
+            {:else if job.busy}
+              <button onclick={() => job.cancel()}>Cancel</button>
+            {:else}
+              <button onclick={() => installFeatured(f)}>Install</button>
+            {/if}
+          </div>
+          <JobStatus {job} text={progressText(job.progress)} />
+        </li>
+      {/each}
+    </ul>
+  {/if}
 
   <h3>Extra voices and language packs</h3>
   <p class="muted">

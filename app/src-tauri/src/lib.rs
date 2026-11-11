@@ -1,6 +1,7 @@
 mod config;
 mod discovery;
 mod download;
+mod featured;
 mod hf;
 mod names;
 mod ollama;
@@ -628,6 +629,101 @@ async fn create_pack(
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FeaturedView {
+    #[serde(flatten)]
+    pack: &'static featured::Featured,
+    total_size: u64,
+    installed: bool,
+}
+
+#[tauri::command]
+fn list_featured(app: AppHandle) -> Res<Vec<FeaturedView>> {
+    let installed: Vec<String> = packs::list(&packs_dir(&app)?).into_iter().map(|(_, p)| p.id).collect();
+    Ok(featured::FEATURED
+        .iter()
+        .map(|f| FeaturedView {
+            pack: f,
+            total_size: f.model.size + f.voices.iter().map(|v| v.size).sum::<u64>(),
+            installed: installed.iter().any(|i| i == f.id),
+        })
+        .collect())
+}
+
+/// Downloads one featured file (size must match exactly) and applies its conversion. None if cancelled.
+async fn fetch_featured(
+    state: &AppState,
+    notify: &Notify,
+    f: &featured::FeaturedFile,
+    folder: &Path,
+    label: &str,
+    ch: &Channel<Progress>,
+) -> Res<Option<()>> {
+    let (u, raw_name) = download::safe_file_name(f.url)?;
+    let raw_path = folder.join(&raw_name);
+    let on = |p: Progress| send(ch, Progress { message: format!("{label}: {}", p.message), ..p });
+    if download::download(&state.http, u, &raw_path, Some(f.size), notify, on).await? {
+        return Ok(None);
+    }
+    let got = std::fs::metadata(&raw_path).map(|m| m.len()).unwrap_or(0);
+    if got != f.size {
+        return Err(format!("{raw_name}: got {got} bytes, expected {}", f.size));
+    }
+    if f.convert == featured::Convert::RawStyleToNpy {
+        let raw = std::fs::read(&raw_path).map_err(|e| e.to_string())?;
+        std::fs::write(folder.join(f.file), featured::raw_f32_to_npy(&raw)?).map_err(|e| e.to_string())?;
+        std::fs::remove_file(&raw_path).map_err(|e| e.to_string())?;
+    } else if raw_name != f.file {
+        std::fs::rename(&raw_path, folder.join(f.file)).map_err(|e| e.to_string())?;
+    }
+    Ok(Some(()))
+}
+
+/// One-click install of a curated pack; ends up exactly like a user-made pack.
+#[tauri::command]
+async fn install_featured(app: AppHandle, state: State<'_, AppState>, id: String, featured_id: String, on_progress: Channel<Progress>) -> Res<bool> {
+    let f = featured::find(&featured_id).ok_or("Unknown featured pack")?;
+    let folder = packs_dir(&app)?.join(f.id);
+    if folder.join(packs::MANIFEST).exists() {
+        return Err(format!("{} is already installed", f.name));
+    }
+    std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    let result: Res<Option<()>> = async {
+        let op = state.op(&id);
+        if fetch_featured(&state, &op.notify, &f.model, &folder, "Model", &on_progress).await?.is_none() {
+            return Ok(None);
+        }
+        for (n, v) in f.voices.iter().enumerate() {
+            if fetch_featured(&state, &op.notify, v, &folder, &format!("Voice {}", n + 1), &on_progress).await?.is_none() {
+                return Ok(None);
+            }
+        }
+        Ok(Some(()))
+    }
+    .await;
+    match result {
+        Ok(Some(())) => {
+            let pack = packs::Pack {
+                id: f.id.into(),
+                name: f.name.into(),
+                language: f.language.into(),
+                model: f.model.file.into(),
+                vocab: None,
+                voices: f.voices.iter().map(|v| v.file.to_string()).collect(),
+            };
+            packs::write_manifest(&folder, &pack)?;
+            send(&on_progress, Progress { message: "Restarting TTS to load the pack".into(), completed: None, total: None });
+            restart_tts_if_running(&app, &state).await?;
+            Ok(false)
+        }
+        other => {
+            let _ = std::fs::remove_dir_all(&folder);
+            other.map(|_| true)
+        }
+    }
+}
+
 fn find_pack(app: &AppHandle, pack_id: &str) -> Res<(PathBuf, packs::Pack)> {
     packs::list(&packs_dir(app)?).into_iter().find(|(_, p)| p.id == pack_id).ok_or_else(|| "No such pack".into())
 }
@@ -795,6 +891,8 @@ pub fn run() {
             create_pack,
             add_pack_voice,
             delete_pack,
+            list_featured,
+            install_featured,
             tts_start,
             tts_stop,
             tts_voices,
