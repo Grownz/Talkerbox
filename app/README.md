@@ -22,8 +22,16 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   extension, cut to 50 characters. Names are stored in settings, keyed by the Ollama id; the id itself never changes.
   For non-HF hosts the page title is not fetched: a direct `.gguf` link has no HTML page, and requesting it would
   download the model.
-- **TTS**: starts and stops the sidecar, speaks replies sentence by sentence (queued, played with WebAudio), and has a
-  stop button, voice picker, speed slider and on/off toggle.
+- **TTS**: the "Speak replies" checkbox starts the sidecar right away. If the start fails, the box unchecks itself and
+  the reason is shown. Unchecking stops the sidecar and all speech at once. With the setting on, TTS starts
+  automatically when the app opens. Replies are spoken sentence by sentence (queued, played with WebAudio). There is a
+  stop button and a speed slider. Each finished assistant reply gets a green play button that re-reads it from the
+  start and cancels any current speech.
+- **Voice picker**: a custom accessible listbox (arrow keys, Home/End, Enter, Escape) grouped by language, with
+  bundled SVG flags from [flag-icons](https://github.com/lipis/flag-icons) (MIT). A native `<select>` cannot show
+  images, and Windows has no flag emoji. Voice labels look like "Heart (female)", with the raw id as tooltip. The
+  language mapping lives in `src/lib/voices.ts` (Kokoro prefix letters a/b/e/f/h/i/j/p/z per Kokoro-82M VOICES.md).
+  Unknown prefixes get a globe.
 - **Settings** (`settings.json` in the app config dir, `%APPDATA%\com.talkerbox.app`): Ollama path, last model, voice,
   TTS on/off and speed.
 
@@ -49,6 +57,7 @@ Checks:
 
 ```powershell
 npm run check                          # svelte-check + tsc
+npm test                               # frontend unit tests (node --test, voice/flag mapping)
 npm run build                          # frontend production build
 cd src-tauri; cargo test; cargo clippy # Rust unit tests (HF link normalisation, Ollama path order, file names)
 ```

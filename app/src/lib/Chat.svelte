@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte'
   import { api, errText, newOpId, type ChatMessage, type ModelInfo, type Settings, type TtsStatus } from './api'
   import { Speaker } from './speaker'
+  import VoicePicker from './VoicePicker.svelte'
 
   let { settings = $bindable(), running, modelsVersion }: { settings: Settings; running: boolean; modelsVersion: number } =
     $props()
@@ -53,35 +54,50 @@
     }
   }
 
+  // The checkbox means "TTS is running": a failed start unchecks it again.
   async function startTts() {
     ttsBusy = true
+    error = ''
     try {
       tts = await api.ttsStart()
       await loadVoices()
     } catch (e) {
-      error = errText(e)
+      settings.ttsEnabled = false
+      error = `Speech could not start: ${errText(e)}`
       tts = await api.ttsStatus().catch(() => tts)
     } finally {
       ttsBusy = false
     }
   }
 
-  async function stopTts() {
+  async function onTtsToggle(e: Event) {
+    settings.ttsEnabled = (e.currentTarget as HTMLInputElement).checked
+    if (settings.ttsEnabled) return startTts()
     speaker.stop()
-    tts = await api.ttsStop().catch((e) => ((error = errText(e)), tts))
+    tts = await api.ttsStop().catch((err) => ((error = errText(err)), tts))
   }
 
-  async function toggleTts() {
-    settings.ttsEnabled = !settings.ttsEnabled
-    if (!settings.ttsEnabled) speaker.stop()
-    else if (tts && !tts.running && tts.sidecarPresent && tts.modelReady) await startTts()
+  const ttsOn = $derived(settings.ttsEnabled && !!tts?.running && !!settings.voice)
+
+  function prepareSpeaker() {
+    speaker.stop()
+    speaker.unlock()
+    speaker.voice = settings.voice!
+    speaker.speed = settings.ttsSpeed
+  }
+
+  /** Re-reads a reply from the beginning, cancelling whatever is being spoken. */
+  function readAloud(text: string) {
+    prepareSpeaker()
+    speaker.feed(text)
+    speaker.flush()
   }
 
   onMount(() => {
     ;(async () => {
       tts = await api.ttsStatus().catch(() => null)
       if (tts?.running) await loadVoices()
-      else if (settings.ttsEnabled && tts?.sidecarPresent && tts.modelReady) await startTts()
+      else if (settings.ttsEnabled) await startTts()
     })()
     return () => speaker.stop()
   })
@@ -96,13 +112,8 @@
     const history = $state.snapshot(messages)
     messages.push({ role: 'assistant', content: '' })
     const reply = messages[messages.length - 1]
-    const speak = settings.ttsEnabled && !!tts?.running && !!settings.voice
-    if (speak) {
-      speaker.stop()
-      speaker.unlock()
-      speaker.voice = settings.voice!
-      speaker.speed = settings.ttsSpeed
-    }
+    const speak = ttsOn
+    if (speak) prepareSpeaker()
     const id = newOpId()
     opId = id
     try {
@@ -141,25 +152,17 @@
   </label>
   <button class="ghost" onclick={() => (messages = [])} disabled={!!opId || !messages.length}>New chat</button>
   <span class="spacer"></span>
-  <label class="check"><input type="checkbox" checked={settings.ttsEnabled} onchange={toggleTts} /> Speak replies</label>
-  {#if settings.ttsEnabled}
-    {#if !tts?.sidecarPresent}
-      <span class="muted" title={tts?.sidecarError ?? ''}>TTS unavailable (details in Models)</span>
-    {:else if !tts.modelReady}
-      <span class="muted">Download the Kokoro files in Models</span>
-    {:else if !tts.running}
-      <button disabled={ttsBusy} onclick={startTts}>{ttsBusy ? 'Starting TTS…' : 'Start TTS'}</button>
-    {:else}
-      <select bind:value={settings.voice} aria-label="Voice">
-        {#each voices as v (v)}<option value={v}>{v}</option>{/each}
-      </select>
-      <label title="Speech speed">
-        Speed {settings.ttsSpeed.toFixed(1)}
-        <input type="range" min="0.5" max="2" step="0.1" bind:value={settings.ttsSpeed} />
-      </label>
-      <button class="ghost" onclick={() => speaker.stop()}>Stop speaking</button>
-      <button class="ghost" onclick={stopTts}>Stop TTS</button>
-    {/if}
+  <label class="check">
+    <input type="checkbox" checked={settings.ttsEnabled} disabled={ttsBusy} onchange={onTtsToggle} />
+    {ttsBusy ? 'Starting speech…' : 'Speak replies'}
+  </label>
+  {#if settings.ttsEnabled && tts?.running}
+    <VoicePicker {voices} bind:value={settings.voice} />
+    <label title="Speech speed">
+      Speed {settings.ttsSpeed.toFixed(1)}
+      <input type="range" min="0.5" max="2" step="0.1" bind:value={settings.ttsSpeed} />
+    </label>
+    <button class="ghost" onclick={() => speaker.stop()}>Stop speaking</button>
   {/if}
 </div>
 
@@ -174,7 +177,21 @@
     <p class="muted center">Say hello to {models.find((m) => m.name === settings.lastModel)?.displayName ?? settings.lastModel}.</p>
   {/if}
   {#each messages as m, i (i)}
-    <div class="msg {m.role}">{m.content}{#if opId && i === messages.length - 1 && m.role === 'assistant'}<span class="cursor">▍</span>{/if}</div>
+    {@const streaming = !!opId && i === messages.length - 1 && m.role === 'assistant'}
+    {@const canReplay = ttsOn && m.role === 'assistant' && !streaming && !!m.content}
+    <div class="msg {m.role}" class:replayable={canReplay}>
+      <span class="text">{m.content}</span>{#if streaming}<span class="cursor">▍</span>{/if}
+      {#if canReplay}
+        <button
+          class="replay"
+          title="Read this reply aloud from the beginning (stops any current speech)"
+          aria-label="Read this reply aloud from the beginning"
+          onclick={() => readAloud(m.content)}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7-4.5z" fill="currentColor" /></svg>
+        </button>
+      {/if}
+    </div>
   {/each}
 </div>
 
