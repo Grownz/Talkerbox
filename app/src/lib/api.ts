@@ -30,6 +30,19 @@ export interface ChatMessage {
   content: string
 }
 
+export interface ChatResult {
+  cancelled: boolean
+  evalCount: number | null
+  /** Nanoseconds. */
+  evalDuration: number | null
+}
+
+/** One line of captured `ollama serve` output (event `ollama-log`). */
+export interface LogLine {
+  seq: number
+  line: string
+}
+
 export interface Progress {
   message: string
   completed: number | null
@@ -74,9 +87,10 @@ export const api = {
 
   listModels: () => invoke<ModelInfo[]>('list_models'),
   deleteModel: (name: string) => invoke<void>('delete_model', { name }),
-  /** Resolves to true if cancelled. */
   chat: (id: string, model: string, messages: ChatMessage[], onToken: (t: string) => void) =>
-    invoke<boolean>('chat', { id, model, messages, onToken: channel(onToken) }),
+    invoke<ChatResult>('chat', { id, model, messages, onToken: channel(onToken) }),
+  ollamaLog: () => invoke<LogLine[]>('ollama_log'),
+  ollamaLogClear: () => invoke<void>('ollama_log_clear'),
   cancel: (id: string) => invoke<void>('cancel', { id }),
   pullModel: (id: string, input: string, onProgress: (p: Progress) => void) =>
     invoke<boolean>('pull_model', { id, input, onProgress: channel(onProgress) }),
@@ -87,6 +101,11 @@ export const api = {
   /** null = back to the default folder in the app data dir. */
   setTtsModelDir: (path: string | null) => invoke<TtsStatus>('set_tts_model_dir', { path }),
   deleteTtsFiles: () => invoke<TtsStatus>('delete_tts_files'),
+  listCustomVoices: () => invoke<TtsFile[]>('list_custom_voices'),
+  /** Restarts a running sidecar afterwards so the voice is available. */
+  downloadVoice: (id: string, url: string, onProgress: (p: Progress) => void) =>
+    invoke<boolean>('download_voice', { id, url, onProgress: channel(onProgress) }),
+  deleteCustomVoice: (name: string) => invoke<void>('delete_custom_voice', { name }),
   downloadTtsFile: (id: string, url: string, onProgress: (p: Progress) => void) =>
     invoke<boolean>('download_tts_file', { id, url, onProgress: channel(onProgress) }),
   ttsStart: () => invoke<TtsStatus>('tts_start'),

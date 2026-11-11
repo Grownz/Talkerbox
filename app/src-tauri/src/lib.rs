@@ -4,6 +4,7 @@ mod download;
 mod hf;
 mod names;
 mod ollama;
+mod term;
 mod tts;
 
 use config::Settings;
@@ -41,6 +42,11 @@ pub fn net_err(e: reqwest::Error) -> String {
     }
 }
 
+/// Configures a child process to run without a console window and with no stdin.
+pub fn hidden(cmd: &mut Command) {
+    cmd.stdin(Stdio::null()).creation_flags(CREATE_NO_WINDOW);
+}
+
 /// Configures a child process to run hidden with stdout/stderr appended to `log`.
 pub fn background(cmd: &mut Command, log: &Path) -> Res<()> {
     if let Some(dir) = log.parent() {
@@ -48,7 +54,8 @@ pub fn background(cmd: &mut Command, log: &Path) -> Res<()> {
     }
     let f = std::fs::OpenOptions::new().create(true).append(true).open(log).map_err(|e| format!("{}: {e}", log.display()))?;
     let f2 = f.try_clone().map_err(|e| e.to_string())?;
-    cmd.stdin(Stdio::null()).stdout(f).stderr(f2).creation_flags(CREATE_NO_WINDOW);
+    hidden(cmd);
+    cmd.stdout(f).stderr(f2);
     Ok(())
 }
 
@@ -113,6 +120,7 @@ struct TtsProc {
 struct AppState {
     http: reqwest::Client,
     ollama: Mutex<Option<Child>>,
+    ollama_log: Arc<Mutex<term::LogBuf>>,
     tts: Mutex<TtsProc>,
     cancels: Mutex<HashMap<String, Arc<Notify>>>,
     job: Option<KillJob>,
@@ -223,8 +231,16 @@ async fn ollama_start(app: AppHandle, state: State<'_, AppState>) -> Res<OllamaS
     if ollama::version(&state.http).await.is_none() {
         let saved = config::load(&app).ollama_path.map(PathBuf::from);
         let exe = discovery::find_on_system(saved.as_deref()).ok_or("ollama.exe not found; set its path first")?;
-        let child = ollama::spawn_serve(&exe, &data_dir(&app)?.join("logs").join("ollama-serve.log"))?;
+        let mut child = ollama::spawn_serve(&exe)?;
         state.track(&child);
+        let marker = state.ollama_log.lock().unwrap().push(format!("--- Talkerbox started {} serve ---", exe.display()));
+        let _ = tauri::Emitter::emit(&app, term::EVENT, marker);
+        if let Some(out) = child.stdout.take() {
+            term::capture(out, state.ollama_log.clone(), app.clone());
+        }
+        if let Some(err) = child.stderr.take() {
+            term::capture(err, state.ollama_log.clone(), app.clone());
+        }
         *state.ollama.lock().unwrap() = Some(child);
         let start = Instant::now();
         loop {
@@ -234,7 +250,7 @@ async fn ollama_start(app: AppHandle, state: State<'_, AppState>) -> Res<OllamaS
             let gone = state.ollama.lock().unwrap().as_mut().and_then(exited);
             if let Some(code) = gone {
                 *state.ollama.lock().unwrap() = None;
-                return Err(format!("ollama serve exited ({code}); see logs/ollama-serve.log in the app data folder"));
+                return Err(format!("ollama serve exited ({code}); see the Ollama terminal view for its output"));
             }
             if start.elapsed() > Duration::from_secs(20) {
                 return Err("ollama serve did not respond within 20 s".into());
@@ -253,6 +269,17 @@ async fn ollama_stop(app: AppHandle, state: State<'_, AppState>) -> Res<OllamaSt
         None => return Err("Ollama was not started by Talkerbox; stop it from its tray icon instead".into()),
     }
     ollama_status(app, state).await
+}
+
+/// Buffered output of the `ollama serve` that Talkerbox started; new lines arrive as `ollama-log` events.
+#[tauri::command]
+fn ollama_log(state: State<'_, AppState>) -> Vec<term::LogLine> {
+    state.ollama_log.lock().unwrap().snapshot()
+}
+
+#[tauri::command]
+fn ollama_log_clear(state: State<'_, AppState>) {
+    state.ollama_log.lock().unwrap().clear();
 }
 
 // ---------- chat & models ----------
@@ -281,9 +308,15 @@ async fn hf_repo_id(http: &reqwest::Client, repo: &str) -> Option<String> {
     v.get("id").and_then(|i| i.as_str()).map(str::to_owned)
 }
 
-/// Streams reply tokens over `on_token`. Resolves to true if cancelled via `cancel`.
+/// Streams reply tokens over `on_token`. Resolves with cancellation flag and Ollama's final eval stats.
 #[tauri::command]
-async fn chat(state: State<'_, AppState>, id: String, model: String, messages: Vec<ChatMessage>, on_token: Channel<String>) -> Res<bool> {
+async fn chat(
+    state: State<'_, AppState>,
+    id: String,
+    model: String,
+    messages: Vec<ChatMessage>,
+    on_token: Channel<String>,
+) -> Res<ollama::ChatResult> {
     let op = state.op(&id);
     ollama::chat(&state.http, &model, &messages, &op.notify, |t| {
         send(&on_token, t);
@@ -323,7 +356,7 @@ async fn import_gguf_url(
     let dest = data_dir(&app)?.join("gguf").join(&file);
     let hf_repo = names::hf_repo_from_url(&url);
     let op = state.op(&id);
-    if download::download(&state.http, url, &dest, &op.notify, |p| send(&on_progress, p)).await? {
+    if download::download(&state.http, url, &dest, None, &op.notify, |p| send(&on_progress, p)).await? {
         return Ok(true);
     }
     if ollama::import_gguf(&state.http, &dest, model_name, &op.notify, |p| send(&on_progress, p)).await? {
@@ -442,7 +475,51 @@ async fn download_tts_file(app: AppHandle, state: State<'_, AppState>, id: Strin
     let (url, file) = download::safe_file_name(&url)?;
     let dest = tts_dir(&app)?.0.join(file);
     let op = state.op(&id);
-    download::download(&state.http, url, &dest, &op.notify, |p| send(&on_progress, p)).await
+    download::download(&state.http, url, &dest, None, &op.notify, |p| send(&on_progress, p)).await
+}
+
+/// Extra voices live in `tts/voices` of the app data dir (never in a user-chosen model folder).
+fn voices_dir(app: &AppHandle) -> Res<PathBuf> {
+    Ok(data_dir(app)?.join("tts").join("voices"))
+}
+
+/// Restarts a running sidecar so it rescans the voices folder.
+async fn restart_tts_if_running(app: &AppHandle, state: &State<'_, AppState>) -> Res<()> {
+    if state.tts.lock().unwrap().port.is_some() {
+        stop_tts_proc(state);
+        tts_start(app.clone(), state.clone()).await?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn list_custom_voices(app: AppHandle) -> Res<Vec<TtsFile>> {
+    Ok(tts::custom_voices(&voices_dir(&app)?).iter().map(|p| tts_file(p)).collect())
+}
+
+/// Downloads a voice file (HF blob links are converted to raw links), max 50 MB, then restarts a running sidecar.
+#[tauri::command]
+async fn download_voice(app: AppHandle, state: State<'_, AppState>, id: String, url: String, on_progress: Channel<Progress>) -> Res<bool> {
+    let (url, file) = download::safe_file_name(&tts::voice_url(&url)?)?;
+    let dest = voices_dir(&app)?.join(file);
+    {
+        let op = state.op(&id);
+        if download::download(&state.http, url, &dest, Some(tts::MAX_VOICE_BYTES), &op.notify, |p| send(&on_progress, p)).await? {
+            return Ok(true);
+        }
+    }
+    send(&on_progress, Progress { message: "Restarting TTS to load the voice".into(), completed: None, total: None });
+    restart_tts_if_running(&app, &state).await?;
+    Ok(false)
+}
+
+#[tauri::command]
+async fn delete_custom_voice(app: AppHandle, state: State<'_, AppState>, name: String) -> Res<()> {
+    let dir = voices_dir(&app)?;
+    // Only names of files actually listed in the voices folder are accepted (no path traversal).
+    let path = tts::custom_voices(&dir).into_iter().find(|p| p.file_name().is_some_and(|n| n.to_string_lossy() == name)).ok_or("No such voice file")?;
+    std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    restart_tts_if_running(&app, &state).await
 }
 
 #[tauri::command]
@@ -450,7 +527,7 @@ async fn tts_start(app: AppHandle, state: State<'_, AppState>) -> Res<TtsStatus>
     if state.tts.lock().unwrap().port.is_none() {
         let exe = tts::sidecar_path()?;
         let (model, voices) = tts::model_files(&tts_dir(&app)?.0).ok_or("Kokoro model files are missing; download them in the Models view")?;
-        let (child, port) = tts::spawn(&exe, &model, &voices, &data_dir(&app)?.join("logs").join("sidecar.log"))?;
+        let (child, port) = tts::spawn(&exe, &model, &voices, tts::voices_dir_arg(&voices_dir(&app)?), &data_dir(&app)?.join("logs").join("sidecar.log"))?;
         state.track(&child);
         state.tts.lock().unwrap().child = Some(child);
         let ready = tts::wait_ready(&state.http, port, || state.tts.lock().unwrap().child.as_mut().and_then(exited)).await;
@@ -507,7 +584,14 @@ pub fn run() {
         .expect("HTTP client");
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState { http, ollama: Mutex::new(None), tts: Mutex::default(), cancels: Mutex::default(), job: KillJob::new() })
+        .manage(AppState {
+            http,
+            ollama: Mutex::new(None),
+            ollama_log: Arc::default(),
+            tts: Mutex::default(),
+            cancels: Mutex::default(),
+            job: KillJob::new(),
+        })
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
@@ -515,6 +599,8 @@ pub fn run() {
             set_ollama_path,
             ollama_start,
             ollama_stop,
+            ollama_log,
+            ollama_log_clear,
             list_models,
             delete_model,
             chat,
@@ -525,6 +611,9 @@ pub fn run() {
             set_tts_model_dir,
             delete_tts_files,
             download_tts_file,
+            list_custom_voices,
+            download_voice,
+            delete_custom_voice,
             tts_start,
             tts_stop,
             tts_voices,

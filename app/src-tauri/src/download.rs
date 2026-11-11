@@ -27,9 +27,12 @@ pub async fn download(
     http: &reqwest::Client,
     url: reqwest::Url,
     dest: &Path,
+    max_bytes: Option<u64>,
     cancel: &Notify,
     on: impl Fn(Progress),
 ) -> Result<bool, String> {
+    let too_big = |n: u64| max_bytes.is_some_and(|m| n > m);
+    let too_big_msg = || format!("File is larger than the {} MB limit", max_bytes.unwrap_or(0) >> 20);
     let io = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
     if let Some(dir) = dest.parent() {
         tokio::fs::create_dir_all(dir).await.map_err(|e| io(dir, e))?;
@@ -61,6 +64,9 @@ pub async fn download(
         have = 0; // Server ignored the Range header: start over.
     }
     let total = resp.content_length().map(|l| l + have);
+    if total.is_some_and(too_big) {
+        return Err(too_big_msg());
+    }
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -80,6 +86,12 @@ pub async fn download(
         let Some(chunk) = chunk else { break };
         file.write_all(&chunk).await.map_err(|e| io(&part, e))?;
         have += chunk.len() as u64;
+        if too_big(have) {
+            // Server sent no or a wrong length: stop and drop the partial file.
+            drop(file);
+            let _ = tokio::fs::remove_file(&part).await;
+            return Err(too_big_msg());
+        }
         if last.elapsed() > Duration::from_millis(200) {
             on(Progress { message: "Downloading".into(), completed: Some(have), total });
             last = Instant::now();

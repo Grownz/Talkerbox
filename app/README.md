@@ -27,6 +27,17 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   automatically when the app opens. Replies are spoken sentence by sentence (queued, played with WebAudio). There is a
   stop button and a speed slider. Each finished assistant reply gets a green play button that re-reads it from the
   start and cancels any current speech.
+- **Extra voices**: in Models, "Add voice from link…" accepts a HuggingFace link (`/blob/` pages are turned into
+  `/resolve/` links) or any direct URL to a `.pt`/`.npy`/`.npz`/`.bin` file of at most 50 MB. Files are stored in
+  `tts\voices` in the local app data dir. The sidecar gets `--voices-dir` when that folder holds a voice file, and a
+  running sidecar is restarted after a voice is added or deleted. The voice id is the file stem.
+- **Ollama terminal**: the `>_` button next to the status LED opens a read-only view of the stdout/stderr of the
+  `ollama serve` that Talkerbox started. It keeps a ring buffer of the last 5000 lines and receives new lines through
+  `ollama-log` events. It scrolls automatically and pauses while you are scrolled up; Clear empties it. Output of an
+  externally started Ollama cannot be captured, and the view says so.
+- **Tokens/s**: shown at the bottom-right of each reply. While streaming it is a 3-second rolling estimate from chunk
+  timestamps, measured from the first token and updated once per second. When the reply is done it shows the exact
+  figure from Ollama's `eval_count / eval_duration`. The rate logic is in `src/lib/rate.ts` (tested).
 - **Voice picker**: a custom accessible listbox (arrow keys, Home/End, Enter, Escape) grouped by language, with
   bundled SVG flags from [flag-icons](https://github.com/lipis/flag-icons) (MIT). A native `<select>` cannot show
   images, and Windows has no flag emoji. Voice labels look like "Heart (female)", with the raw id as tooltip. The

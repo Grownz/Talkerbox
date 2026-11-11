@@ -107,27 +107,46 @@ pub async fn delete(http: &reqwest::Client, model: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatResult {
+    pub cancelled: bool,
+    /// Generated tokens and generation time in ns, from Ollama's final chunk (absent when cancelled).
+    pub eval_count: Option<u64>,
+    pub eval_duration: Option<u64>,
+}
+
 pub async fn chat(
     http: &reqwest::Client,
     model: &str,
     messages: &[ChatMessage],
     cancel: &Notify,
     mut on_token: impl FnMut(String) -> Result<(), String>,
-) -> Result<bool, String> {
+) -> Result<ChatResult, String> {
     #[derive(Deserialize)]
     struct Chunk {
         message: Option<ChatMessage>,
+        eval_count: Option<u64>,
+        eval_duration: Option<u64>,
     }
     let body = json!({ "model": model, "messages": messages, "stream": true });
     let resp = tokio::select! {
-        _ = cancel.notified() => return Ok(true),
+        _ = cancel.notified() => return Ok(ChatResult { cancelled: true, ..Default::default() }),
         r = http.post(format!("{BASE}/api/chat")).json(&body).send() => check(r.map_err(net_err)?).await?,
     };
-    ndjson(resp, cancel, |c: Chunk| match c.message {
-        Some(m) if !m.content.is_empty() => on_token(m.content),
-        _ => Ok(()),
+    let mut result = ChatResult::default();
+    result.cancelled = ndjson(resp, cancel, |c: Chunk| {
+        if c.eval_count.is_some() {
+            result.eval_count = c.eval_count;
+            result.eval_duration = c.eval_duration;
+        }
+        match c.message {
+            Some(m) if !m.content.is_empty() => on_token(m.content),
+            _ => Ok(()),
+        }
     })
-    .await
+    .await?;
+    Ok(result)
 }
 
 #[derive(Deserialize)]
@@ -202,10 +221,11 @@ pub async fn import_gguf(
     .await
 }
 
-/// Spawns `ollama serve` without a console window, logging to `log`.
-pub fn spawn_serve(exe: &Path, log: &Path) -> Result<std::process::Child, String> {
+/// Spawns `ollama serve` without a console window; stdout/stderr are piped for the terminal view.
+pub fn spawn_serve(exe: &Path) -> Result<std::process::Child, String> {
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("serve");
-    crate::background(&mut cmd, log)?;
+    crate::hidden(&mut cmd);
+    cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     cmd.spawn().map_err(|e| format!("Failed to start {}: {e}", exe.display()))
 }

@@ -4,11 +4,13 @@
   import Chat from './lib/Chat.svelte'
   import Models from './lib/Models.svelte'
   import OllamaPathDialog from './lib/OllamaPathDialog.svelte'
+  import Terminal from './lib/Terminal.svelte'
 
   let settings = $state<Settings | null>(null)
   let status = $state<OllamaStatus | null>(null)
   let tab = $state<'chat' | 'models'>('chat')
   let showPathDialog = $state(false)
+  let showTerminal = $state(false)
   let busy = $state<'start' | 'stop' | null>(null)
 
   // What a click on the status LED does in the current state.
@@ -87,6 +89,17 @@
       aria-label={ledAction.label}
       onclick={ledAction.run}
     ></button>
+    <button
+      class="ghost icon"
+      title="Show Ollama server output"
+      aria-label="Show Ollama server output"
+      onclick={() => (showTerminal = true)}
+    >
+      <svg viewBox="0 0 20 16" aria-hidden="true">
+        <rect x="0.75" y="0.75" width="18.5" height="14.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <path d="M4 5l3 3-3 3M9 11.5h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </button>
     <button class="ghost" title={status?.exe ?? 'Set ollama.exe location'} onclick={() => (showPathDialog = true)}>Path…</button>
   </div>
 </header>
@@ -103,6 +116,14 @@
     </div>
   {/if}
 </main>
+
+{#if showTerminal}
+  <Terminal
+    running={!!status?.running}
+    startedByApp={!!status?.startedByApp}
+    onClose={() => (showTerminal = false)}
+  />
+{/if}
 
 {#if showPathDialog}
   <OllamaPathDialog

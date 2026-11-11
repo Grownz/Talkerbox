@@ -58,15 +58,61 @@ pub fn model_files(dir: &Path) -> Option<(PathBuf, PathBuf)> {
     Some((pick("kokoro-v1.0.onnx", "onnx", MIN_MODEL)?, pick("voices-v1.0.bin", "bin", MIN_VOICES)?))
 }
 
+pub const VOICE_EXTS: [&str; 4] = ["pt", "npy", "npz", "bin"];
+pub const MAX_VOICE_BYTES: u64 = 50 << 20;
+
+fn has_voice_ext(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && VOICE_EXTS.iter().any(|e| e.eq_ignore_ascii_case(ext)))
+}
+
+/// Turns a voice link into a direct download URL: HuggingFace `.../blob/<rev>/<path>` pages become
+/// `.../resolve/<rev>/<path>`. Returns the URL and the file name; only voice file extensions are accepted.
+pub fn voice_url(input: &str) -> Result<String, String> {
+    let s = input.trim();
+    let mut u = reqwest::Url::parse(s).map_err(|e| format!("Invalid URL: {e}"))?;
+    let host = u.host_str().unwrap_or("").trim_start_matches("www.").to_string();
+    if host == "huggingface.co" || host == "hf.co" {
+        let segs: Vec<String> = u.path_segments().map(|s| s.map(str::to_owned).collect()).unwrap_or_default();
+        if segs.get(2).is_some_and(|s| s == "blob") {
+            let mut segs = segs;
+            segs[2] = "resolve".into();
+            u.set_path(&segs.join("/"));
+        }
+    }
+    let file = u.path_segments().and_then(|mut s| s.next_back()).unwrap_or("");
+    if !has_voice_ext(file) {
+        return Err(format!("Voice files must end in .{}", VOICE_EXTS.join(", .")));
+    }
+    Ok(u.to_string())
+}
+
+/// Optional folder of extra voices, passed to the sidecar only when it holds at least one voice file.
+pub fn voices_dir_arg(dir: &Path) -> Option<&Path> {
+    let any = std::fs::read_dir(dir).ok()?.filter_map(Result::ok).any(|e| has_voice_ext(&e.file_name().to_string_lossy()));
+    any.then_some(dir)
+}
+
+/// Installed custom voice files (sorted by name).
+pub fn custom_voices(dir: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|r| r.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.is_file() && has_voice_ext(&p.file_name().unwrap_or_default().to_string_lossy())).collect())
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
 fn free_port() -> Result<u16, String> {
     let l = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| format!("No free port: {e}"))?;
     l.local_addr().map(|a| a.port()).map_err(|e| e.to_string())
 }
 
-pub fn spawn(exe: &Path, model: &Path, voices: &Path, log: &Path) -> Result<(Child, u16), String> {
+pub fn spawn(exe: &Path, model: &Path, voices: &Path, voices_dir: Option<&Path>, log: &Path) -> Result<(Child, u16), String> {
     let port = free_port()?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--port").arg(port.to_string()).arg("--model").arg(model).arg("--voices").arg(voices);
+    if let Some(d) = voices_dir {
+        cmd.arg("--voices-dir").arg(d);
+    }
     crate::background(&mut cmd, log)?;
     // The sidecar exits when its stdin closes. The pipe stays open while the Child is held, and closes
     // when Talkerbox exits or dies, so the sidecar never outlives us.
@@ -115,4 +161,25 @@ pub async fn synthesize(http: &reqwest::Client, port: u16, text: &str, voice: &s
         .map_err(net_err)?;
     let r = crate::ollama::check(r).await?;
     Ok(r.bytes().await.map_err(net_err)?.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::voice_url;
+
+    #[test]
+    fn voice_links() {
+        assert_eq!(
+            voice_url("https://huggingface.co/hexgrad/Kokoro-82M/blob/main/voices/af_heart.pt").as_deref(),
+            Ok("https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/af_heart.pt")
+        );
+        assert_eq!(
+            voice_url("https://huggingface.co/u/r/resolve/main/x.npy?download=true").as_deref(),
+            Ok("https://huggingface.co/u/r/resolve/main/x.npy?download=true")
+        );
+        assert_eq!(voice_url(" https://example.com/v/bf_test.NPZ ").as_deref(), Ok("https://example.com/v/bf_test.NPZ"));
+        assert!(voice_url("https://example.com/model.gguf").is_err());
+        assert!(voice_url("https://example.com/.pt").is_err());
+        assert!(voice_url("not a url").is_err());
+    }
 }

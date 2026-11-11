@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
   import { api, errText, newOpId, type ChatMessage, type ModelInfo, type Settings, type TtsStatus } from './api'
+  import { finalRate, formatRate, liveRate } from './rate'
   import { Speaker } from './speaker'
   import VoicePicker from './VoicePicker.svelte'
 
@@ -8,7 +9,8 @@
     $props()
 
   let models = $state<ModelInfo[]>([])
-  let messages = $state<ChatMessage[]>([])
+  // `tps`: tokens/s shown in the reply box (live while streaming, final afterwards).
+  let messages = $state<(ChatMessage & { tps?: number })[]>([])
   let input = $state('')
   let opId = $state<string | null>(null)
   let error = $state('')
@@ -24,7 +26,14 @@
     void modelsVersion
     if (running) loadModels()
     // TTS files or folder may have changed in the Models view.
-    api.ttsStatus().then((s) => (tts = s), () => {})
+    api.ttsStatus().then(
+      (s) => {
+        tts = s
+        // Custom voices may have been added or removed (the sidecar was restarted).
+        if (s.running && settings.ttsEnabled) loadVoices()
+      },
+      () => {},
+    )
   })
 
   // Keep the newest text visible while streaming.
@@ -109,23 +118,32 @@
     input = ''
     error = ''
     messages.push({ role: 'user', content: text })
-    const history = $state.snapshot(messages)
+    const history: ChatMessage[] = messages.map(({ role, content }) => ({ role, content }))
     messages.push({ role: 'assistant', content: '' })
     const reply = messages[messages.length - 1]
     const speak = ttsOn
     if (speak) prepareSpeaker()
     const id = newOpId()
     opId = id
+    // Chunk arrival times; the display updates once per second only, to avoid flicker.
+    const stamps: number[] = []
+    const timer = setInterval(() => {
+      const r = liveRate(stamps, performance.now())
+      if (r !== null) reply.tps = r
+    }, 1000)
     try {
-      await api.chat(id, model, history, (t) => {
+      const res = await api.chat(id, model, history, (t) => {
+        stamps.push(performance.now())
         reply.content += t
         if (speak) speaker.feed(t)
       })
       if (speak) speaker.flush()
+      reply.tps = finalRate(res.evalCount, res.evalDuration, stamps) ?? undefined
     } catch (e) {
       error = errText(e)
       if (!reply.content) messages.pop()
     } finally {
+      clearInterval(timer)
       opId = null
     }
   }
@@ -179,17 +197,25 @@
   {#each messages as m, i (i)}
     {@const streaming = !!opId && i === messages.length - 1 && m.role === 'assistant'}
     {@const canReplay = ttsOn && m.role === 'assistant' && !streaming && !!m.content}
-    <div class="msg {m.role}" class:replayable={canReplay}>
+    <div class="msg {m.role}">
       <span class="text">{m.content}</span>{#if streaming}<span class="cursor">▍</span>{/if}
-      {#if canReplay}
-        <button
-          class="replay"
-          title="Read this reply aloud from the beginning (stops any current speech)"
-          aria-label="Read this reply aloud from the beginning"
-          onclick={() => readAloud(m.content)}
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7-4.5z" fill="currentColor" /></svg>
-        </button>
+      {#if m.role === 'assistant'}
+        <!-- Fixed footer: the rate keeps its place whether or not the play button is shown. -->
+        <div class="msg-footer">
+          <span class="tps" title="Generation speed">{m.tps !== undefined ? formatRate(m.tps) : ''}</span>
+          {#if canReplay}
+            <button
+              class="replay"
+              title="Read this reply aloud from the beginning (stops any current speech)"
+              aria-label="Read this reply aloud from the beginning"
+              onclick={() => readAloud(m.content)}
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7-4.5z" fill="currentColor" /></svg>
+            </button>
+          {:else}
+            <span class="replay-slot" aria-hidden="true"></span>
+          {/if}
+        </div>
       {/if}
     </div>
   {/each}

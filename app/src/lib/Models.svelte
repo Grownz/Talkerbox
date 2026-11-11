@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ask, open } from '@tauri-apps/plugin-dialog'
-  import { api, errText, formatBytes, progressText, type ModelInfo, type TtsStatus } from './api'
+  import { api, errText, formatBytes, progressText, type ModelInfo, type TtsFile, type TtsStatus } from './api'
   import { Job } from './job.svelte'
   import JobStatus from './JobStatus.svelte'
 
@@ -93,6 +93,39 @@
   async function chooseTtsDir() {
     const dir = await open({ directory: true, title: 'Select a folder containing the Kokoro .onnx and voices .bin files' })
     if (typeof dir === 'string') await ttsAction(() => api.setTtsModelDir(dir))
+  }
+
+  const voiceJob = new Job()
+  let customVoices = $state<TtsFile[]>([])
+  let showVoiceInput = $state(false)
+  let voiceUrl = $state('')
+
+  async function loadCustomVoices() {
+    customVoices = await api.listCustomVoices().catch(() => [])
+  }
+  $effect(() => {
+    loadCustomVoices()
+  })
+
+  async function addVoice() {
+    if (await voiceJob.run((id, p) => api.downloadVoice(id, voiceUrl, p), 'Voice installed.')) {
+      voiceUrl = ''
+      showVoiceInput = false
+    }
+    await loadCustomVoices()
+    onModelsChanged()
+  }
+
+  async function removeVoice(name: string) {
+    if (!(await ask(`Delete voice file "${name}"?`, { title: 'Delete voice', kind: 'warning' }))) return
+    ttsError = ''
+    try {
+      await api.deleteCustomVoice(name)
+    } catch (e) {
+      ttsError = errText(e)
+    }
+    await loadCustomVoices()
+    onModelsChanged()
   }
 
   async function deleteTts() {
@@ -214,4 +247,38 @@
     {/if}
   {/if}
   <JobStatus job={ttsJob} text={progressText(ttsJob.progress)} />
+
+  <h3>Extra voices</h3>
+  <p class="muted">
+    Kokoro voice files (.pt, .npy, .npz, .bin, max 50 MB) from a HuggingFace link or any direct URL. The voice id is the
+    file name without extension, e.g. <code>af_custom</code>.
+  </p>
+  {#if customVoices.length}
+    <ul class="voice-files">
+      {#each customVoices as v (v.name)}
+        <li>
+          <code>{v.name}</code> <span class="muted">{formatBytes(v.size)}</span>
+          <button class="ghost danger" disabled={voiceJob.busy} onclick={() => removeVoice(v.name)}>Delete</button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+  {#if showVoiceInput || voiceJob.busy}
+    <div class="row">
+      <input
+        bind:value={voiceUrl}
+        placeholder="https://huggingface.co/hexgrad/Kokoro-82M/blob/main/voices/af_heart.pt"
+        disabled={voiceJob.busy}
+      />
+      {#if voiceJob.busy}
+        <button onclick={() => voiceJob.cancel()}>Cancel</button>
+      {:else}
+        <button onclick={addVoice} disabled={!voiceUrl.trim()}>Download</button>
+        <button class="ghost" onclick={() => (showVoiceInput = false)}>Close</button>
+      {/if}
+    </div>
+  {:else}
+    <div class="row"><button class="ghost" onclick={() => (showVoiceInput = true)}>Add voice from link…</button></div>
+  {/if}
+  <JobStatus job={voiceJob} text={progressText(voiceJob.progress)} />
 </section>

@@ -225,15 +225,34 @@ label {
   white-space: pre-wrap;
 }
 
-.msg.replayable {
-  padding-bottom: 30px;
-  min-width: 64px;
+.msg.assistant {
+  padding-bottom: 32px;
+  min-width: 150px;
+}
+
+.msg-footer {
+  position: absolute;
+  right: 6px;
+  bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tps {
+  font-size: 0.8em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 7.5ch;
+  text-align: right;
+}
+
+.replay-slot {
+  width: 24px;
+  height: 24px;
 }
 
 button.replay {
-  position: absolute;
-  right: 6px;
-  bottom: 6px;
   width: 24px;
   height: 24px;
   padding: 0;
@@ -455,6 +474,54 @@ code {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+h3 {
+  font-size: 15px;
+  margin: 8px 0 0;
+}
+
+.voice-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.voice-files li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.modal.terminal {
+  width: min(1000px, 100%);
+  height: min(640px, 90vh);
+}
+
+.term-output {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 8px;
+  background: #0f1115;
+  color: #d6d9de;
+  border-radius: 6px;
+  font: 12px/1.45 Consolas, 'Cascadia Mono', monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+button.icon {
+  display: inline-grid;
+  place-items: center;
+  padding: 6px 8px;
+}
+
+button.icon svg {
+  width: 20px;
+  height: 16px;
 }
 
 .modal label {
