@@ -6,7 +6,7 @@ It ships as one Windows exe and the Tauri app starts it as a sidecar.
 ## Contract
 
 ```
-tts-sidecar.exe --port <int> --model <kokoro-v1.0.onnx> --voices <voices-v1.0.bin> [--voices-dir <dir>]
+tts-sidecar.exe --port <int> --model <kokoro-v1.0.onnx> --voices <voices-v1.0.bin> [--voices-dir <dir>] [--packs-dir <dir>]
 ```
 
 `--voices-dir` is optional. It loads extra voices from the given directory, in addition to the built-in voices:
@@ -16,9 +16,42 @@ tts-sidecar.exe --port <int> --model <kokoro-v1.0.onnx> --voices <voices-v1.0.bi
   It is decoded by a whitelisting unpickler that accepts only a contiguous float32 tensor. torch is not
   used, and a malicious file cannot run code.
 
-Voice ids must match `[A-Za-z0-9_-]{1,64}`. If an extra voice has the same id as a built-in voice, the
-built-in one is kept. An invalid file, or a directory that does not exist, causes a one-line `warning:` on stderr and is
-skipped. Startup never fails because of it.
+Voice ids must match `[A-Za-z0-9_-]{1,64}`. An invalid file, or a directory that does not exist, causes a
+one-line `warning:` on stderr and is skipped. Startup never fails because of it.
+
+`--packs-dir` is optional. It loads language packs, which are Kokoro fine-tunes with their own ONNX model.
+Each subfolder of the directory holds one pack and must contain a `pack.json`:
+
+```json
+{"id": "de-martin", "name": "German (Martin)", "language": "de",
+ "model": "model.onnx", "vocab": "vocab.json", "voices": ["martin.npy"]}
+```
+
+- Paths are relative to the pack folder and must stay inside it.
+- `vocab` is optional. It points to a JSON file with a `{"vocab": {...}}` object, which is passed to
+  kokoro-onnx as `vocab_config`.
+- `voices` lists files in any of the formats above, loaded with the same safe loaders.
+- `language` must be an espeak-ng code from phonemizer's `EspeakBackend.supported_languages()`. The bundled
+  espeak-ng supports 140 codes, for example `de`, `fr-fr`, `pt-br` or `cmn`. kokoro-onnx passes the code
+  unchanged to `phonemizer.phonemize`, and an unknown code would fail there with
+  `RuntimeError: language "xx" is not supported by the espeak backend`. That is why packs are
+  checked at startup instead.
+- The pack id must match `[A-Za-z0-9_-]{1,64}` and must not be `base`.
+- When does the model load? The metadata and voices are read at startup, so `/voices` lists them right away.
+  The pack's ONNX model is loaded on the first synthesis that uses it, then kept in memory. That first
+  load logs `info: loading pack model <id>` on stderr.
+- A broken pack is skipped with a one-line warning, and none of its voices are listed. A pack is broken if
+  its JSON is bad, its language is unknown, or a file is missing, invalid or outside the folder.
+
+If several sources define the same voice id, the first one in this order wins, with a stderr warning:
+built-in voices, then `--voices-dir`, then packs in alphabetical order of pack id.
+
+The **language** of a voice:
+- Built-in voices and `--voices-dir` voices: the first letter of the id picks the espeak-ng language
+  (`a` en-us, `b` en-gb, `e` es, `f` fr-fr, `h` hi, `i` it, `j` ja, `p` pt-br, `z` cmn).
+- Pack voices: the pack's `language`.
+- A `--voices-dir` voice whose first letter is none of these, such as `xx_test`, is a **fallback** voice.
+  It is synthesized with the base model and en-us phonemes, and is flagged so the app can warn the user.
 
 - Listens on `127.0.0.1:<port>` only. `--port 0` lets the OS choose a free port.
 - Prints exactly one stdout line, `READY port=<port>`, once it is serving. Logs go to stderr.
@@ -29,8 +62,8 @@ skipped. Startup never fails because of it.
 | Endpoint | Response |
 |---|---|
 | `GET /health` | `{"status":"ok"}` |
-| `GET /voices` | `{"voices":["af_alloy", ...]}` (54 voices in v1.0) |
-| `POST /synthesize` `{"text":str,"voice":str,"speed":float}` | `audio/wav`, 16-bit PCM, mono, 24 kHz |
+| `GET /voices` | `{"voices":["af_alloy", ...], "details":[{"id":str,"pack":null\|"<pack id>","language":"<espeak code>","fallback":bool}, ...]}` |
+| `POST /synthesize` `{"text":str,"voice":str,"speed":float}` | `audio/wav`, 16-bit PCM, mono, 24 kHz, with headers `X-TTS-Model: base\|<pack id>` and `X-TTS-Fallback: 1` (fallback voices only) |
 
 Errors are JSON `{"error": "..."}`:
 - 400: body missing or not valid JSON
@@ -39,8 +72,7 @@ Errors are JSON `{"error": "..."}`:
 - 500: synthesis failed
 - 404: unknown path
 
-The first letter of the voice name picks the espeak-ng language (`a` en-us, `b` en-gb, `e` es,
-`f` fr-fr, `h` hi, `i` it, `j` ja, `p` pt-br, `z` cmn). Any other first letter falls back to en-us. Inference calls run one at a time, guarded by a lock.
+Inference calls, and loading a pack model, run one at a time behind a single global lock.
 
 ## Development
 
@@ -56,6 +88,12 @@ curl.exe -L -o models\kokoro-v1.0.onnx "$b/kokoro-v1.0.onnx"
 curl.exe -L -o models\voices-v1.0.bin  "$b/voices-v1.0.bin"
 # optional: a real HF .pt voice, which the tests also load when it is present
 curl.exe -L -o models\hf_af_heart.pt https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/af_heart.pt
+# optional: a real German fine-tune (Apache-2.0, about 325 MB). test_real_german_pack uses it when it is present.
+mkdir models\packs\de-martin
+$h = "https://huggingface.co/Godelaune/Kokoro-82M-ONNX-German-Martin/resolve/main"
+curl.exe -L -o models\packs\de-martin\kokoro-martin.onnx "$h/kokoro-martin.onnx"
+curl.exe -L -o models\packs\de-martin\voices-martin.npz "$h/voices-martin.npz"
+'{"id":"de-martin","name":"German (Martin)","language":"de","model":"kokoro-martin.onnx","voices":["voices-martin.npz"]}' | Set-Content models\packs\de-martin\pack.json
 
 .venv\Scripts\python -m pytest -s test_sidecar.py            # tests the Python source
 $env:SIDECAR_EXE = "dist\tts-sidecar.exe"; .venv\Scripts\python -m pytest -s test_sidecar.py   # tests the exe

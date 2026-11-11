@@ -106,32 +106,94 @@ def voices_dir(tmp_path_factory):
     (d / "garbage.bin").write_bytes(b"not a voice")
     if HF_PT.is_file():
         shutil.copy(HF_PT, d / "zf_real.pt")
+    np.save(d / "xx_test.npy", heart * 0.95)  # unknown first letter, no pack -> fallback
+    np.save(d / "shared.npy", heart)  # clashes with pack voices: --voices-dir wins
     return d
 
 
+def write_pack(folder, meta, voices):
+    folder.mkdir()
+    (folder / "pack.json").write_text(json.dumps(meta), encoding="utf-8")
+    for name, arr in voices.items():
+        np.save(folder / name, arr)
+
+
 @pytest.fixture(scope="module")
-def base_url(voices_dir):
+def packs_dir(tmp_path_factory):
     if not (MODEL.is_file() and VOICES.is_file()):
         pytest.skip("model files missing in models/")
+    d = tmp_path_factory.mktemp("packs")
+    with np.load(VOICES) as z:
+        heart, emma = z["af_heart"], z["bf_emma"]
+    # A fake German pack: the base model under another id, which tests the mechanics, not German quality.
+    write_pack(d / "de-test", {"id": "de-test", "name": "German (test)", "language": "de",
+                               "model": "model.onnx", "voices": ["thorsten.npy", "both.npy", "shared.npy"]},
+               {"thorsten.npy": heart * 0.9 + emma * 0.1, "both.npy": emma, "shared.npy": emma})
+    shutil.copy(MODEL, d / "de-test" / "model.onnx")
+    write_pack(d / "aa-first", {"id": "aa-first", "name": "First", "language": "en-us", "model": "m.onnx",
+                                "vocab": "vocab.json", "voices": ["both.npy", "af_heart.npy"]},
+               {"both.npy": heart, "af_heart.npy": emma})
+    try:
+        os.link(d / "de-test" / "model.onnx", d / "aa-first" / "m.onnx")
+    except OSError:
+        shutil.copy(MODEL, d / "aa-first" / "m.onnx")
+    import kokoro_onnx.config
+    (d / "aa-first" / "vocab.json").write_text(json.dumps({"vocab": kokoro_onnx.config.DEFAULT_VOCAB}), encoding="utf-8")
+    # Broken packs: all must be skipped and their voices not listed.
+    write_pack(d / "bad-lang", {"id": "bad-lang", "name": "x", "language": "xx", "model": "m.onnx",
+                                "voices": ["broken_a.npy"]}, {"broken_a.npy": heart})
+    (d / "bad-lang" / "m.onnx").write_bytes(b"x")
+    write_pack(d / "bad-model", {"id": "bad-model", "name": "x", "language": "de", "model": "missing.onnx",
+                                 "voices": ["broken_b.npy"]}, {"broken_b.npy": heart})
+    write_pack(d / "bad-escape", {"id": "bad-escape", "name": "x", "language": "de", "model": "../de-test/model.onnx",
+                                  "voices": ["broken_c.npy"]}, {"broken_c.npy": heart})
+    write_pack(d / "bad-json", {}, {"broken_d.npy": heart})
+    (d / "bad-json" / "pack.json").write_text("{not json", encoding="utf-8")
+    (d / "no-pack-json").mkdir()
+    return d
+
+
+def start_server(*extra, stderr=None):
     # Port 0 lets the OS pick a free port; READY reports the real one.
-    proc = subprocess.Popen(command("--port", "0", "--model", str(MODEL), "--voices", str(VOICES),
-                                    "--voices-dir", str(voices_dir)),
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    proc = subprocess.Popen(command("--port", "0", "--model", str(MODEL), "--voices", str(VOICES), *extra),
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True)
     line = proc.stdout.readline().strip()
     assert line.startswith("READY port="), f"unexpected startup line: {line!r}"
-    yield f"http://127.0.0.1:{line.split('=')[1]}"
+    return proc, f"http://127.0.0.1:{line.split('=')[1]}"
+
+
+def stop_server(proc):
     proc.stdin.close()  # contract: closing stdin makes the sidecar exit
     assert proc.wait(timeout=15) == 0
 
 
-def request(url, body=None):
+@pytest.fixture(scope="module")
+def server(voices_dir, packs_dir, tmp_path_factory):
+    log = tmp_path_factory.mktemp("log") / "stderr.txt"
+    with open(log, "w") as f:
+        proc, url = start_server("--voices-dir", str(voices_dir), "--packs-dir", str(packs_dir), stderr=f)
+        yield url, log
+        stop_server(proc)
+
+
+@pytest.fixture(scope="module")
+def base_url(server):
+    return server[0]
+
+
+def request(url, body=None, want_headers=False):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
-            return r.status, r.headers.get("Content-Type"), r.read()
+            status, headers, body = r.status, r.headers, r.read()
     except urllib.error.HTTPError as e:
-        return e.code, e.headers.get("Content-Type"), e.read()
+        status, headers, body = e.code, e.headers, e.read()
+    return (status, headers, body) if want_headers else (status, headers.get("Content-Type"), body)
+
+
+def synth(base_url, voice, text="Hello there."):
+    return request(base_url + "/synthesize", {"text": text, "voice": voice, "speed": 1.0}, want_headers=True)
 
 
 def test_health(base_url):
@@ -202,6 +264,65 @@ def test_read_pt_roundtrip_and_rejects_malicious(tmp_path):
     assert (tmp_path / "PWNED.txt").exists()
     if HF_PT.is_file():
         assert tts_sidecar.read_pt(HF_PT).shape == (510, 1, 256)
+
+
+def test_pack_model_loads_lazily_once(server):
+    url, log = server
+    assert "loading pack model" not in log.read_text()  # listed at startup, but no pack model loaded yet
+    for _ in range(2):
+        status, headers, body = synth(url, "thorsten", "Guten Tag, wie geht es dir?")
+        assert status == 200 and body[:4] == b"RIFF" and headers["X-TTS-Model"] == "de-test"
+        assert headers.get("X-TTS-Fallback") is None
+    assert log.read_text().count("loading pack model de-test") == 1
+
+
+def test_voice_details_and_precedence(server):
+    url, log = server
+    data = json.loads(request(url + "/voices")[2])
+    details = {d["id"]: d for d in data["details"]}
+    assert data["voices"] == sorted(details)
+    assert details["af_heart"] == {"id": "af_heart", "pack": None, "language": "en-us", "fallback": False}
+    assert details["bf_emma"]["language"] == "en-gb"
+    assert details["thorsten"] == {"id": "thorsten", "pack": "de-test", "language": "de", "fallback": False}
+    assert details["shared"]["pack"] is None  # --voices-dir beats packs
+    assert details["both"]["pack"] == "aa-first"  # packs: alphabetical by pack id
+    assert details["xx_test"] == {"id": "xx_test", "pack": None, "language": "en-us", "fallback": True}
+    assert details["af_custom"]["fallback"] is False
+    assert not {"broken_a", "broken_b", "broken_c", "broken_d"} & set(details)
+    text = log.read_text()
+    for pack in ("bad-lang", "bad-model", "bad-escape", "bad-json", "no-pack-json"):
+        assert f"warning: skipping pack {pack}:" in text
+    assert "voice 'both' from pack de-test ignored" in text
+
+
+def test_synth_headers_for_precedence_and_fallback(server):
+    url, _ = server
+    _, h, _ = synth(url, "both")  # also exercises a pack with its own vocab.json
+    assert h["X-TTS-Model"] == "aa-first"
+    _, h, _ = synth(url, "shared")
+    assert h["X-TTS-Model"] == "base" and h["X-TTS-Fallback"] == "1"  # 's' is no base language letter
+    _, h, _ = synth(url, "af_custom")
+    assert h["X-TTS-Model"] == "base" and h.get("X-TTS-Fallback") is None
+    status, h, body = synth(url, "xx_test")
+    assert status == 200 and body[:4] == b"RIFF"
+    assert h["X-TTS-Model"] == "base" and h["X-TTS-Fallback"] == "1"
+
+
+REAL_PACKS = HERE / "models" / "packs"  # optional real fine-tunes, see README
+
+
+@pytest.mark.skipif(not (REAL_PACKS / "de-martin" / "pack.json").is_file(), reason="no real German pack")
+def test_real_german_pack():
+    proc, url = start_server("--packs-dir", str(REAL_PACKS))
+    try:
+        t = time.perf_counter()
+        status, h, body = synth(url, "martin", "Guten Tag! Das ist ein Test der deutschen Stimme.")
+        print(f"de-martin first synth incl. model load: {time.perf_counter() - t:.2f}s")
+        assert status == 200 and body[:4] == b"RIFF" and h["X-TTS-Model"] == "de-martin"
+        assert len(body) > 24000 * 2 and np.abs(np.frombuffer(body[44:], "<i2")).max() > 1000  # >1 s, audible
+        (HERE / "models" / "de-martin-sample.wav").write_bytes(body)
+    finally:
+        stop_server(proc)
 
 
 def test_missing_model_exits_nonzero():

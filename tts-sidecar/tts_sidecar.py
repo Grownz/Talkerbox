@@ -1,6 +1,6 @@
 """Talkerbox local TTS sidecar: a tiny HTTP server around kokoro-onnx.
 
-Usage: tts-sidecar --port <int> --model <kokoro-v1.0.onnx> --voices <voices-v1.0.bin> [--voices-dir <dir>]
+Usage: tts-sidecar --port <int> --model <kokoro-v1.0.onnx> --voices <voices-v1.0.bin> [--voices-dir <dir>] [--packs-dir <dir>]
 Binds 127.0.0.1 only. Prints "READY port=<port>" once serving and exits when stdin closes.
 """
 
@@ -99,37 +99,112 @@ def read_pt(path):
     return data[t.offset: t.offset + count].reshape(t.size)
 
 
+VOICE_EXTS = (".npy", ".npz", ".bin", ".pt")
+
+
+def warn(msg):
+    sys.stderr.write(f"warning: {msg}\n")
+
+
+def load_voice_file(path):
+    """One voice file -> {voice id: style array}. Raises on anything invalid."""
+    ext = path.suffix.lower()
+    if ext == ".npy":
+        found = {path.stem: np.load(path, allow_pickle=False)}
+    elif ext == ".pt":
+        found = {path.stem: read_pt(path)}
+    elif ext in (".npz", ".bin"):
+        if not zipfile.is_zipfile(path):
+            raise ValueError("not an npz bundle")
+        with np.load(path, allow_pickle=False) as bundle:
+            found = {k: bundle[k] for k in bundle.files}
+    else:
+        raise ValueError(f"unsupported voice file type {ext!r}")
+    checked = {}
+    for vid, arr in found.items():
+        if not VOICE_ID.fullmatch(vid):
+            raise ValueError(f"invalid voice id {vid!r}")
+        checked[vid] = check_style(arr)
+    return checked
+
+
 def load_extra_voices(directory):
     """Load *.npy / *.npz / *.bin / *.pt voices from a directory. Bad files are skipped with a warning."""
     voices = {}
     try:
         paths = sorted(Path(directory).iterdir())
     except OSError as e:
-        sys.stderr.write(f"warning: cannot read voices dir {directory}: {e}\n")
+        warn(f"cannot read voices dir {directory}: {e}")
         return voices
     for path in paths:
-        ext = path.suffix.lower()
-        if not path.is_file() or ext not in (".npy", ".npz", ".bin", ".pt"):
-            continue
-        try:
-            if ext == ".npy":
-                found = {path.stem: np.load(path, allow_pickle=False)}
-            elif ext == ".pt":
-                found = {path.stem: read_pt(path)}
-            else:
-                if not zipfile.is_zipfile(path):
-                    raise ValueError("not an npz bundle")
-                with np.load(path, allow_pickle=False) as bundle:
-                    found = {k: bundle[k] for k in bundle.files}
-            checked = {}
-            for vid, arr in found.items():
-                if not VOICE_ID.fullmatch(vid):
-                    raise ValueError(f"invalid voice id {vid!r}")
-                checked[vid] = check_style(arr)
-            voices.update(checked)
-        except Exception as e:
-            sys.stderr.write(f"warning: skipping voice file {path.name}: {e}\n")
+        if path.is_file() and path.suffix.lower() in VOICE_EXTS:
+            try:
+                voices.update(load_voice_file(path))
+            except Exception as e:
+                warn(f"skipping voice file {path.name}: {e}")
     return voices
+
+
+def load_pack(folder, languages):
+    """Read a pack's pack.json and voices (not its model). Raises ValueError if anything is wrong."""
+    meta = json.loads((folder / "pack.json").read_text(encoding="utf-8"))
+    if not isinstance(meta, dict):
+        raise ValueError("pack.json must be a JSON object")
+    pid, name, lang, model, vocab, files = (meta.get(k) for k in ("id", "name", "language", "model", "vocab", "voices"))
+    if not isinstance(pid, str) or not VOICE_ID.fullmatch(pid) or pid == "base":
+        raise ValueError(f"invalid pack id {pid!r}")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("'name' must be a non-empty string")
+    if lang not in languages:
+        raise ValueError(f"unknown espeak-ng language {lang!r}")
+    if not isinstance(files, list) or not files:
+        raise ValueError("'voices' must be a non-empty list")
+
+    root = folder.resolve()
+
+    def pack_file(rel):
+        if not isinstance(rel, str):
+            raise ValueError(f"invalid file entry {rel!r}")
+        p = (root / rel).resolve()
+        if not p.is_relative_to(root) or not p.is_file():  # no escaping the pack folder
+            raise ValueError(f"file not found in pack: {rel}")
+        return p
+
+    model = pack_file(model)
+    if vocab is not None:
+        vocab = pack_file(vocab)
+        if not isinstance(json.loads(vocab.read_text(encoding="utf-8")).get("vocab"), dict):
+            raise ValueError("vocab file must contain a 'vocab' object")
+    voices = {}
+    for rel in files:
+        voices.update(load_voice_file(pack_file(rel)))
+    return {"id": pid, "name": name, "language": lang, "model": model, "vocab": vocab, "voices": voices}
+
+
+def load_packs(directory, languages):
+    """All valid packs in a directory, sorted by pack id. Broken packs are skipped with a warning."""
+    packs = {}
+    try:
+        folders = sorted(p for p in Path(directory).iterdir() if p.is_dir())
+    except OSError as e:
+        warn(f"cannot read packs dir {directory}: {e}")
+        return []
+    for folder in folders:
+        try:
+            pack = load_pack(folder, languages)
+        except Exception as e:
+            warn(f"skipping pack {folder.name}: {e}")
+            continue
+        if pack["id"] in packs:
+            warn(f"skipping pack {folder.name}: duplicate pack id {pack['id']!r}")
+            continue
+        packs[pack["id"]] = pack
+    return [packs[k] for k in sorted(packs)]
+
+
+class Voice:
+    def __init__(self, style, pack, language, fallback, source):
+        self.style, self.pack, self.language, self.fallback, self.source = style, pack, language, fallback, source
 
 
 def to_wav(samples, sample_rate):
@@ -161,8 +236,25 @@ def validate(payload, voices):
     return text, voice, float(speed)
 
 
-def make_handler(kokoro, voices):
-    lock = threading.Lock()  # one inference at a time; onnxruntime already uses all cores
+def make_handler(kokoro, voices, packs, voices_path):
+    """voices: {id: Voice}; packs: {pack id: pack dict}; pack models load on first use."""
+    lock = threading.Lock()  # one inference (and pack model load) at a time; onnxruntime already uses all cores
+    models = {}
+    voice_list = sorted(voices)
+    details = [{"id": vid, "pack": voices[vid].pack, "language": voices[vid].language,
+                "fallback": voices[vid].fallback} for vid in voice_list]
+
+    def model_for(pack_id):  # call with lock held
+        if pack_id is None:
+            return kokoro
+        if pack_id not in models:
+            from kokoro_onnx import Kokoro
+            pack = packs[pack_id]
+            sys.stderr.write(f"info: loading pack model {pack_id}\n")
+            # Kokoro() insists on a voices file; the base one is fine because pack voices are passed as arrays.
+            models[pack_id] = Kokoro(str(pack["model"]), voices_path,
+                                     vocab_config=str(pack["vocab"]) if pack["vocab"] else None)
+        return models[pack_id]
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "tts-sidecar"
@@ -170,12 +262,14 @@ def make_handler(kokoro, voices):
         def log_message(self, fmt, *args):  # keep stdout clean for the parent; log to stderr
             sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
-        def send(self, code, body, ctype="application/json"):
+        def send(self, code, body, ctype="application/json", headers=()):
             if isinstance(body, dict):
                 body = json.dumps(body).encode()
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
+            for k, v in headers:
+                self.send_header(k, v)
             self.end_headers()
             self.wfile.write(body)
 
@@ -183,7 +277,7 @@ def make_handler(kokoro, voices):
             if self.path == "/health":
                 self.send(200, {"status": "ok"})
             elif self.path == "/voices":
-                self.send(200, {"voices": voices})
+                self.send(200, {"voices": voice_list, "details": details})
             else:
                 self.send(404, {"error": "not found"})
 
@@ -204,14 +298,15 @@ def make_handler(kokoro, voices):
                 return self.send(400, {"error": "body is not valid JSON"})
             except ValueError as e:
                 return self.send(422, {"error": str(e)})
+            v = voices[voice]
             try:
                 with lock:
-                    samples, rate = kokoro.create(text, voice=voice, speed=speed,
-                                                  lang=VOICE_LANG.get(voice[0], "en-us"))
-            except Exception as e:  # e.g. text that yields no phonemes
+                    samples, rate = model_for(v.pack).create(text, voice=v.style, speed=speed, lang=v.language)
+            except Exception as e:  # e.g. text that yields no phonemes, or a pack model that fails to load
                 sys.stderr.write(f"synthesis failed: {e!r}\n")
                 return self.send(500, {"error": f"synthesis failed: {e}"})
-            self.send(200, to_wav(samples, rate), "audio/wav")
+            headers = [("X-TTS-Model", v.pack or "base")] + ([("X-TTS-Fallback", "1")] if v.fallback else [])
+            self.send(200, to_wav(samples, rate), "audio/wav", headers)
 
     return Handler
 
@@ -222,6 +317,7 @@ def main():
     p.add_argument("--model", required=True, help="path to kokoro-v1.0.onnx")
     p.add_argument("--voices", required=True, help="path to voices-v1.0.bin")
     p.add_argument("--voices-dir", help="optional directory with extra voices (*.npy, *.npz, *.bin, *.pt)")
+    p.add_argument("--packs-dir", help="optional directory of language packs (subfolders with pack.json)")
     a = p.parse_args()
 
     for label, path in (("model", a.model), ("voices", a.voices)):
@@ -229,19 +325,36 @@ def main():
             sys.exit(f"error: {label} file not found: {path}")
     try:
         from kokoro_onnx import Kokoro
-        kokoro = Kokoro(a.model, a.voices)
+        from phonemizer.backend import EspeakBackend
+        kokoro = Kokoro(a.model, a.voices)  # also points phonemizer at the bundled espeak-ng
         builtin = {k: kokoro.voices[k] for k in kokoro.voices.files}
+        languages = set(EspeakBackend.supported_languages())
     except Exception as e:
         sys.exit(f"error: failed to load model/voices: {e}")
+
+    # Precedence on id clashes: built-in > --voices-dir > packs (alphabetical by pack id).
+    voices = {}
+
+    def add(vid, voice):
+        if vid in voices:
+            warn(f"voice {vid!r} from {voice.source} ignored, already defined by {voices[vid].source}")
+        else:
+            voices[vid] = voice
+
+    for vid, style in builtin.items():
+        add(vid, Voice(style, None, VOICE_LANG.get(vid[0], "en-us"), False, "built-in voices"))
     if a.voices_dir:
-        extra = load_extra_voices(a.voices_dir)
-        for vid in sorted(extra.keys() & builtin.keys()):
-            sys.stderr.write(f"warning: extra voice {vid!r} ignored, a built-in voice has that id\n")
-        kokoro.voices = {**extra, **builtin}  # built-in voices win on id clashes
-    voices = kokoro.get_voices()
+        for vid, style in load_extra_voices(a.voices_dir).items():
+            # No known language letter and no pack: base model with en-us phonemes, flagged as fallback.
+            add(vid, Voice(style, None, VOICE_LANG.get(vid[0], "en-us"), vid[0] not in VOICE_LANG, "--voices-dir"))
+    packs = load_packs(a.packs_dir, languages) if a.packs_dir else []
+    for pack in packs:
+        for vid, style in pack["voices"].items():
+            add(vid, Voice(style, pack["id"], pack["language"], False, f"pack {pack['id']}"))
 
     try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(kokoro, voices))
+        handler = make_handler(kokoro, voices, {pk["id"]: pk for pk in packs}, a.voices)
+        httpd = ThreadingHTTPServer(("127.0.0.1", a.port), handler)
     except OSError as e:
         sys.exit(f"error: cannot bind 127.0.0.1:{a.port}: {e}")
     httpd.daemon_threads = True
