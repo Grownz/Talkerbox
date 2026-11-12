@@ -91,6 +91,22 @@ def write_evil_pt(path, marker):
         z.writestr("evil/byteorder", "little")
 
 
+def write_oversized_voices(d):
+    """Files that must be rejected without allocating their (claimed) size. Returns their stems."""
+    liar = io.BytesIO()  # header claims an 8 GB array, body is 1 KB
+    np.lib.format.write_array_header_1_0(liar, {"descr": "<f4", "fortran_order": False, "shape": (8_000_000, 1, 256)})
+    liar.write(bytes(1024))
+    (d / "liar_npy.npy").write_bytes(liar.getvalue())
+    big = io.BytesIO()  # 20 MB of zeros, about 20 KB once deflated
+    np.save(big, np.zeros((20_000, 1, 256), np.float32))
+    with zipfile.ZipFile(d / "bomb.npz", "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("bomb_a.npy", big.getvalue())
+    with zipfile.ZipFile(d / "liar.bin", "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("liar_b.npy", liar.getvalue())
+    np.save(d / "too_many_rows.npy", np.zeros((2000, 1, 256), np.float32))  # 2 MB, but > 1024 rows
+    return ["liar_npy", "bomb", "bomb_a", "liar_b", "too_many_rows"]
+
+
 @pytest.fixture(scope="module")
 def voices_dir(tmp_path_factory):
     if not VOICES.is_file():
@@ -108,6 +124,7 @@ def voices_dir(tmp_path_factory):
         shutil.copy(HF_PT, d / "zf_real.pt")
     np.save(d / "xx_test.npy", heart * 0.95)  # unknown first letter, no pack -> fallback
     np.save(d / "shared.npy", heart)  # clashes with pack voices: --voices-dir wins
+    write_oversized_voices(d)
     return d
 
 
@@ -127,8 +144,11 @@ def packs_dir(tmp_path_factory):
         heart, emma = z["af_heart"], z["bf_emma"]
     # A fake German pack: the base model under another id, which tests the mechanics, not German quality.
     write_pack(d / "de-test", {"id": "de-test", "name": "German (test)", "language": "de",
-                               "model": "model.onnx", "voices": ["thorsten.npy", "both.npy", "shared.npy"]},
-               {"thorsten.npy": heart * 0.9 + emma * 0.1, "both.npy": emma, "shared.npy": emma})
+                               "model": "model.onnx",
+                               "voices": ["thorsten.npy", "both.npy", "shared.npy", "martin-v1.1.npy", "page.pt"]},
+               {"thorsten.npy": heart * 0.9 + emma * 0.1, "both.npy": emma, "shared.npy": emma,
+                "martin-v1.1.npy": emma})  # invalid id (dot): skipped, the rest of the pack stays
+    (d / "de-test" / "page.pt").write_text("<!DOCTYPE html><html>Not found</html>")
     shutil.copy(MODEL, d / "de-test" / "model.onnx")
     write_pack(d / "aa-first", {"id": "aa-first", "name": "First", "language": "en-us", "model": "m.onnx",
                                 "vocab": "vocab.json", "voices": ["both.npy", "af_heart.npy"]},
@@ -147,6 +167,9 @@ def packs_dir(tmp_path_factory):
                                  "voices": ["broken_b.npy"]}, {"broken_b.npy": heart})
     write_pack(d / "bad-escape", {"id": "bad-escape", "name": "x", "language": "de", "model": "../de-test/model.onnx",
                                   "voices": ["broken_c.npy"]}, {"broken_c.npy": heart})
+    write_pack(d / "bad-voices", {"id": "bad-voices", "name": "x", "language": "de", "model": "m.onnx",
+                                  "voices": ["missing.npy", "bad.id.npy"]}, {"bad.id.npy": heart})
+    (d / "bad-voices" / "m.onnx").write_bytes(b"x")
     write_pack(d / "bad-json", {}, {"broken_d.npy": heart})
     (d / "bad-json" / "pack.json").write_text("{not json", encoding="utf-8")
     (d / "no-pack-json").mkdir()
@@ -234,7 +257,7 @@ def test_extra_voices_listed(base_url, voices_dir):
     voices = json.loads(request(base_url + "/voices")[2])["voices"]
     assert {"af_custom", "bm_extra", "xm_fake", "af_heart"} <= set(voices)
     assert voices.count("af_heart") == 1
-    assert not {"evil", "bad_shape", "garbage"} & set(voices)
+    assert not {"evil", "bad_shape", "garbage", "liar_npy", "bomb_a", "liar_b", "too_many_rows"} & set(voices)
     assert ("zf_real" in voices) == HF_PT.is_file()
     assert not (voices_dir / "PWNED.txt").exists()
 
@@ -249,6 +272,23 @@ def test_builtin_wins_on_clash(base_url):
     # The bundle's af_heart is all zeros; the real one must still produce audible speech.
     body = request(base_url + "/synthesize", {"text": "Hello there.", "voice": "af_heart", "speed": 1.0})[2]
     assert np.abs(np.frombuffer(body[44:], "<i2")).max() > 1000
+
+
+def test_oversized_voice_files_rejected_fast(tmp_path):
+    for stem in write_oversized_voices(tmp_path)[:1] + ["bomb", "liar", "too_many_rows"]:
+        path = next(tmp_path.glob(stem + ".*"))
+        t = time.perf_counter()
+        with pytest.raises(ValueError, match="too large|expected shape"):
+            tts_sidecar.load_voice_file(path)
+        assert time.perf_counter() - t < 1.0, path.name
+    huge_pt = np.zeros((3000, 1, 256), np.float32)  # 3 MB tensor with > 1024 rows
+    fake_torch_save(tmp_path / "huge.pt", huge_pt)
+    with pytest.raises(ValueError, match="expected shape"):
+        tts_sidecar.load_voice_file(tmp_path / "huge.pt")
+    np.save(tmp_path / "ok.npy", np.ones((510, 1, 256), np.float32))
+    np.savez_compressed(tmp_path / "ok.npz", ok_a=np.ones((510, 1, 256), np.float32))
+    assert tts_sidecar.load_voice_file(tmp_path / "ok.npy")["ok"].shape == (510, 1, 256)
+    assert list(tts_sidecar.load_voice_file(tmp_path / "ok.npz")) == ["ok_a"]
 
 
 def test_read_pt_roundtrip_and_rejects_malicious(tmp_path):
@@ -290,8 +330,11 @@ def test_voice_details_and_precedence(server):
     assert details["af_custom"]["fallback"] is False
     assert not {"broken_a", "broken_b", "broken_c", "broken_d"} & set(details)
     text = log.read_text()
-    for pack in ("bad-lang", "bad-model", "bad-escape", "bad-json", "no-pack-json"):
+    for pack in ("bad-lang", "bad-model", "bad-escape", "bad-json", "no-pack-json", "bad-voices"):
         assert f"warning: skipping pack {pack}:" in text
+    assert "warning: skipping voice file martin-v1.1.npy in pack de-test:" in text
+    assert "warning: skipping voice file page.pt in pack de-test:" in text
+    assert "martin-v1.1" not in details and "page" not in details
     assert "voice 'both' from pack de-test ignored" in text
 
 

@@ -16,7 +16,13 @@ tts-sidecar.exe --port <int> --model <kokoro-v1.0.onnx> --voices <voices-v1.0.bi
   It is decoded by a whitelisting unpickler that accepts only a contiguous float32 tensor. torch is not
   used, and a malicious file cannot run code.
 
-Voice ids must match `[A-Za-z0-9_-]{1,64}`. An invalid file, or a directory that does not exist, causes a
+Voice ids must match `[A-Za-z0-9_-]{1,64}`. These size limits apply:
+- A voice may have at most 1024 rows. Real voices have 510.
+- Each voice array or zip member may be at most 8 MB.
+- A whole bundle may be at most 64 MB.
+
+The sizes are checked from the headers before anything is read, which also blocks zip bombs.
+An invalid file, or a directory that does not exist, causes a
 one-line `warning:` on stderr and is skipped. Startup never fails because of it.
 
 `--packs-dir` is optional. It loads language packs, which are Kokoro fine-tunes with their own ONNX model.
@@ -40,8 +46,10 @@ Each subfolder of the directory holds one pack and must contain a `pack.json`:
 - When does the model load? The metadata and voices are read at startup, so `/voices` lists them right away.
   The pack's ONNX model is loaded on the first synthesis that uses it, then kept in memory. That first
   load logs `info: loading pack model <id>` on stderr.
+- A bad voice file in a pack is skipped with a one-line warning, and the pack keeps its other voices.
 - A broken pack is skipped with a one-line warning, and none of its voices are listed. A pack is broken if
-  its JSON is bad, its language is unknown, or a file is missing, invalid or outside the folder.
+  its JSON is bad, its language is unknown, its model or vocab file is missing, invalid or outside the
+  folder, or none of its voices loads.
 
 If several sources define the same voice id, the first one in this order wins, with a stderr warning:
 built-in voices, then `--voices-dir`, then packs in alphabetical order of pack id.

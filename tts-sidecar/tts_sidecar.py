@@ -8,6 +8,7 @@ import argparse
 import collections
 import io
 import json
+import math
 import os
 import pickle
 import re
@@ -31,12 +32,17 @@ VOICE_LANG = {"a": "en-us", "b": "en-gb", "e": "es", "f": "fr-fr", "h": "hi",
 
 VOICE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 STYLE_DIM = 256
+MAX_STYLE_ROWS = 1024  # real voices have 510
+MAX_VOICE_BYTES = 8 * 1024 * 1024  # per voice array / zip member; a real voice is 522 KB
+MAX_BUNDLE_BYTES = 64 * 1024 * 1024  # all members of one npz/bin bundle together
 
 
 def check_style(arr):
     """Validate a Kokoro voice: float style vectors of shape (N, 1, 256)."""
-    if not isinstance(arr, np.ndarray) or arr.ndim != 3 or arr.shape[0] < 1 or arr.shape[1:] != (1, STYLE_DIM):
-        raise ValueError(f"expected shape (N, 1, {STYLE_DIM}), got {getattr(arr, 'shape', type(arr).__name__)}")
+    if (not isinstance(arr, np.ndarray) or arr.ndim != 3 or not 1 <= arr.shape[0] <= MAX_STYLE_ROWS
+            or arr.shape[1:] != (1, STYLE_DIM)):
+        raise ValueError(f"expected shape (N<={MAX_STYLE_ROWS}, 1, {STYLE_DIM}), "
+                         f"got {getattr(arr, 'shape', type(arr).__name__)}")
     if arr.dtype.kind != "f" or not np.isfinite(arr).all():
         raise ValueError("expected finite float values")
     return arr.astype(np.float32)
@@ -87,8 +93,10 @@ def read_pt(path):
         t = _SafePtUnpickler(io.BytesIO(z.read(pkl[0]))).load()
         if not isinstance(t, _Tensor) or not isinstance(t.storage, _Storage):
             raise ValueError("file does not contain a single tensor")
-        count = int(np.prod(t.size))
-        contiguous = tuple(int(np.prod(t.size[i + 1:])) for i in range(len(t.size)))
+        if not 0 < t.storage.numel * 4 <= MAX_VOICE_BYTES:
+            raise ValueError("tensor data too large")
+        count = math.prod(t.size)
+        contiguous = tuple(math.prod(t.size[i + 1:]) for i in range(len(t.size)))
         # shortcut: only contiguous tensors (what torch.save of a plain voice produces); add strides if a file needs it
         if t.stride != contiguous or not 0 <= t.offset <= t.offset + count <= t.storage.numel:
             raise ValueError("unsupported tensor layout")
@@ -106,18 +114,36 @@ def warn(msg):
     sys.stderr.write(f"warning: {msg}\n")
 
 
+def read_npy(open_stream):
+    """Read one .npy stream, checking its declared size before numpy allocates anything."""
+    with open_stream() as f:
+        version = np.lib.format.read_magic(f)
+        if version not in ((1, 0), (2, 0)):
+            raise ValueError(f"unsupported .npy version {version}")
+        read_header = np.lib.format.read_array_header_1_0 if version == (1, 0) else np.lib.format.read_array_header_2_0
+        shape, _, dtype = read_header(f)
+    if dtype.hasobject or math.prod(shape) * dtype.itemsize > MAX_VOICE_BYTES:
+        raise ValueError(f"voice array too large or not numeric: shape {shape}, dtype {dtype}")
+    with open_stream() as f:
+        return np.lib.format.read_array(f, allow_pickle=False)
+
+
 def load_voice_file(path):
     """One voice file -> {voice id: style array}. Raises on anything invalid."""
     ext = path.suffix.lower()
     if ext == ".npy":
-        found = {path.stem: np.load(path, allow_pickle=False)}
+        found = {path.stem: read_npy(lambda: open(path, "rb"))}
     elif ext == ".pt":
         found = {path.stem: read_pt(path)}
     elif ext in (".npz", ".bin"):
         if not zipfile.is_zipfile(path):
             raise ValueError("not an npz bundle")
-        with np.load(path, allow_pickle=False) as bundle:
-            found = {k: bundle[k] for k in bundle.files}
+        with zipfile.ZipFile(path) as z:
+            infos = z.infolist()
+            # zipfile never yields more than file_size bytes, so these header checks also stop zip bombs
+            if any(i.file_size > MAX_VOICE_BYTES for i in infos) or sum(i.file_size for i in infos) > MAX_BUNDLE_BYTES:
+                raise ValueError("bundle member too large")
+            found = {i.filename.removesuffix(".npy"): read_npy(lambda i=i: z.open(i)) for i in infos}
     else:
         raise ValueError(f"unsupported voice file type {ext!r}")
     checked = {}
@@ -177,7 +203,12 @@ def load_pack(folder, languages):
             raise ValueError("vocab file must contain a 'vocab' object")
     voices = {}
     for rel in files:
-        voices.update(load_voice_file(pack_file(rel)))
+        try:
+            voices.update(load_voice_file(pack_file(rel)))
+        except Exception as e:  # one bad voice file must not take the whole pack down
+            warn(f"skipping voice file {rel} in pack {folder.name}: {e}")
+    if not voices:
+        raise ValueError("no valid voices")
     return {"id": pid, "name": name, "language": lang, "model": model, "vocab": vocab, "voices": voices}
 
 
