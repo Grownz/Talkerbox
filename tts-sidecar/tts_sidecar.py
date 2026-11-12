@@ -280,6 +280,9 @@ def make_handler(kokoro, voices, packs, voices_path):
             return kokoro
         if pack_id not in models:
             from kokoro_onnx import Kokoro
+            for old in list(models):  # keep at most base + one pack model in memory (~330 MB each)
+                sys.stderr.write(f"info: unloading pack model {old}\n")
+                del models[old]
             pack = packs[pack_id]
             sys.stderr.write(f"info: loading pack model {pack_id}\n")
             # Kokoro() insists on a voices file; the base one is fine because pack voices are passed as arrays.
@@ -304,7 +307,17 @@ def make_handler(kokoro, voices, packs, voices_path):
             self.end_headers()
             self.wfile.write(body)
 
+        def host_ok(self):
+            # DNS-rebinding guard: a browser page on another domain carries its own Host header.
+            port = self.server.server_address[1]
+            if (self.headers.get("Host") or "").lower() in (f"127.0.0.1:{port}", f"localhost:{port}"):
+                return True
+            self.send(403, {"error": "forbidden host"})
+            return False
+
         def do_GET(self):
+            if not self.host_ok():
+                return
             if self.path == "/health":
                 self.send(200, {"status": "ok"})
             elif self.path == "/voices":
@@ -313,8 +326,13 @@ def make_handler(kokoro, voices, packs, voices_path):
                 self.send(404, {"error": "not found"})
 
         def do_POST(self):
+            if not self.host_ok():
+                return
             if self.path != "/synthesize":
                 return self.send(404, {"error": "not found"})
+            # Browsers can only send JSON cross-origin after a CORS preflight, which we never answer.
+            if self.headers.get_content_type() != "application/json":
+                return self.send(415, {"error": "Content-Type must be application/json"})
             try:
                 length = int(self.headers.get("Content-Length", 0))
             except ValueError:

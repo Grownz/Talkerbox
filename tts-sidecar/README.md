@@ -44,8 +44,9 @@ Each subfolder of the directory holds one pack and must contain a `pack.json`:
   checked at startup instead.
 - The pack id must match `[A-Za-z0-9_-]{1,64}` and must not be `base`.
 - When does the model load? The metadata and voices are read at startup, so `/voices` lists them right away.
-  The pack's ONNX model is loaded on the first synthesis that uses it, then kept in memory. That first
-  load logs `info: loading pack model <id>` on stderr.
+  The pack's ONNX model is loaded on the first synthesis that uses it and logs
+  `info: loading pack model <id>` on stderr. At most one pack model stays in memory besides the base
+  model. Switching to another pack unloads the previous one first (`info: unloading pack model <id>`).
 - A bad voice file in a pack is skipped with a one-line warning, and the pack keeps its other voices.
 - A broken pack is skipped with a one-line warning, and none of its voices are listed. A pack is broken if
   its JSON is bad, its language is unknown, its model or vocab file is missing, invalid or outside the
@@ -62,6 +63,12 @@ The **language** of a voice:
   It is synthesized with the base model and en-us phonemes, and is flagged so the app can warn the user.
 
 - Listens on `127.0.0.1:<port>` only. `--port 0` lets the OS choose a free port.
+- Requests of every kind, `/health` included, must carry a `Host` header of exactly `127.0.0.1:<port>`
+  or `localhost:<port>`, where `<port>` is the port actually bound. Any other Host gets a 403. This
+  guards against DNS rebinding.
+- `POST /synthesize` requires `Content-Type: application/json`, optionally with `; charset=...`.
+  Any other type gets a 415. A browser page cannot send that type cross-origin without a CORS
+  preflight, and the sidecar never answers one.
 - Prints exactly one stdout line, `READY port=<port>`, once it is serving. Logs go to stderr.
 - Exits with code 0 when its stdin closes. The parent must give it a stdin **pipe**: if stdin is
   null or `NUL`, it exits right away.
@@ -75,7 +82,9 @@ The **language** of a voice:
 
 Errors are JSON `{"error": "..."}`:
 - 400: body missing or not valid JSON
+- 403: wrong Host header
 - 413: body larger than 64 KB
+- 415: Content-Type is not application/json
 - 422: validation failed (empty text, more than 2000 characters, unknown voice, speed outside 0.5-2.0)
 - 500: synthesis failed
 - 404: unknown path

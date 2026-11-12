@@ -204,9 +204,9 @@ def base_url(server):
     return server[0]
 
 
-def request(url, body=None, want_headers=False):
+def request(url, body=None, want_headers=False, headers=None):
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json", **(headers or {})})
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
             status, headers, body = r.status, r.headers, r.read()
@@ -349,6 +349,38 @@ def test_synth_headers_for_precedence_and_fallback(server):
     status, h, body = synth(url, "xx_test")
     assert status == 200 and body[:4] == b"RIFF"
     assert h["X-TTS-Model"] == "base" and h["X-TTS-Fallback"] == "1"
+
+
+def test_only_one_pack_model_cached(server):
+    url, log = server
+    before = log.read_text()
+    for voice in ("thorsten", "both", "thorsten"):
+        assert synth(url, voice)[0] == 200
+    new = log.read_text()[len(before):]
+    info = [ln for ln in new.splitlines() if "pack model" in ln]
+    # Each switch unloads the previous pack model before loading the next one.
+    assert len(info) == 6 and all("unloading" in a and "loading pack model" in b for a, b in zip(info[::2], info[1::2]))
+
+
+BODY = {"text": "Hi.", "voice": "af_heart", "speed": 1.0}
+
+
+@pytest.mark.parametrize("ctype", ["text/plain", "application/x-www-form-urlencoded", ""])
+def test_rejects_wrong_content_type(base_url, ctype):
+    assert request(base_url + "/synthesize", BODY, headers={"Content-Type": ctype})[0] == 415
+
+
+def test_accepts_json_with_charset(base_url):
+    status, ctype, body = request(base_url + "/synthesize", BODY, headers={"Content-Type": "application/json; charset=utf-8"})
+    assert status == 200 and body[:4] == b"RIFF"
+
+
+@pytest.mark.parametrize("path,body", [("/health", None), ("/voices", None), ("/synthesize", BODY)])
+def test_rejects_foreign_host(base_url, path, body):
+    port = base_url.rsplit(":", 1)[1]
+    for host in ("evil.example:" + port, "127.0.0.1:1", "localhost"):
+        assert request(base_url + path, body, headers={"Host": host})[0] == 403
+    assert request(base_url + path, body, headers={"Host": "localhost:" + port})[0] == 200
 
 
 REAL_PACKS = HERE / "models" / "packs"  # optional real fine-tunes, see README
