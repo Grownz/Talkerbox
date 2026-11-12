@@ -12,6 +12,9 @@
   } from './api'
   import { finalRate, formatRate, liveRate } from './rate'
   import { Speaker } from './speaker'
+  import Btn from './Btn.svelte'
+  import { fit } from './fit'
+  import Icon from './Icon.svelte'
   import VoicePicker from './VoicePicker.svelte'
 
   let { settings = $bindable(), running, modelsVersion }: { settings: Settings; running: boolean; modelsVersion: number } =
@@ -86,7 +89,7 @@
     }
   }
 
-  // The checkbox means "TTS is running": a failed start unchecks it again.
+  // The switch means "TTS is running": a failed start turns it off again.
   async function startTts() {
     ttsBusy = true
     error = ''
@@ -102,8 +105,8 @@
     }
   }
 
-  async function onTtsToggle(e: Event) {
-    settings.ttsEnabled = (e.currentTarget as HTMLInputElement).checked
+  async function onTtsToggle() {
+    settings.ttsEnabled = !settings.ttsEnabled
     if (settings.ttsEnabled) return startTts()
     speaker.stop()
     tts = await api.ttsStop().catch((err) => ((error = errText(err)), tts))
@@ -184,95 +187,132 @@
   }
 </script>
 
-<div class="toolbar">
-  <label>
-    Model
-    <select
-      bind:value={settings.lastModel}
-      disabled={!running || !models.length}
-      title={!running ? 'Start Ollama to choose a model' : !models.length ? 'No models installed; add one in the Models view' : 'Ollama model that answers your messages'}
+<header class="vhead">
+  <div class="fit" use:fit>
+    <span class="select-wrap model">
+      <select
+        bind:value={settings.lastModel}
+        aria-label="Chat model"
+        disabled={!running || !models.length}
+        title={!running ? 'Start Ollama to choose a model' : !models.length ? 'No models installed; add one in the Models view' : 'Ollama model that answers your messages'}
+      >
+        {#each models as m (m.name)}<option value={m.name} title={m.name}>{m.displayName}</option>{/each}
+      </select><Icon name="chev-down" />
+    </span>
+    <Btn
+      icon="plus"
+      label="New chat"
+      short="New"
+      class="ghost"
+      title={opId ? 'Wait for the reply to finish (or stop it) before starting a new chat' : 'Clear the conversation and start over'}
+      onclick={() => (messages = [])}
+      disabled={!!opId || !messages.length}
+    />
+    <span class="sep"></span>
+    <button
+      type="button"
+      class="switch"
+      class:busy={ttsBusy}
+      role="switch"
+      aria-checked={settings.ttsEnabled}
+      aria-label="Speak replies"
+      title={ttsBusy ? 'The speech engine is starting' : settings.ttsEnabled ? 'Turn speech off and stop any reading' : 'Start the speech engine and read replies aloud'}
+      disabled={ttsBusy}
+      onclick={onTtsToggle}><span class="track"></span><span class="swl">{ttsBusy ? 'Starting speech…' : 'Speak replies'}</span></button
     >
-      {#each models as m (m.name)}<option value={m.name} title={m.name}>{m.displayName}</option>{/each}
-    </select>
-  </label>
-  <button
-    class="ghost"
-    title={opId ? 'Wait for the reply to finish (or stop it) before starting a new chat' : 'Clear the conversation and start over'}
-    onclick={() => (messages = [])}
-    disabled={!!opId || !messages.length}>New chat</button
-  >
-  <span class="spacer"></span>
-  <label
-    class="check"
-    title={ttsBusy ? 'The speech engine is starting' : settings.ttsEnabled ? 'Turn speech off and stop any reading' : 'Start the speech engine and read replies aloud'}
-  >
-    <input type="checkbox" checked={settings.ttsEnabled} disabled={ttsBusy} onchange={onTtsToggle} />
-    {ttsBusy ? 'Starting speech…' : 'Speak replies'}
-  </label>
-  {#if settings.ttsEnabled && tts?.running}
-    <VoicePicker {voices} details={voiceDetails} {packNames} bind:value={settings.voice} />
-    <label title="Speaking rate, from 0.5x to 2x; applies from the next reply or replay">
-      Speed {settings.ttsSpeed.toFixed(1)}
-      <input type="range" min="0.5" max="2" step="0.1" bind:value={settings.ttsSpeed} />
-    </label>
-    <button class="ghost" title="Stop the current speech and drop queued sentences" onclick={() => speaker.stop()}>Stop speaking</button>
-  {/if}
-</div>
+    {#if settings.ttsEnabled && tts?.running}
+      <VoicePicker {voices} details={voiceDetails} {packNames} bind:value={settings.voice} />
+      <label class="range" title="Speaking rate, from 0.5x to 2x; applies from the next reply or replay">
+        <Icon name="gauge" /><span class="vh">Speech speed</span>
+        <input type="range" min="0.5" max="2" step="0.1" bind:value={settings.ttsSpeed} />
+        <output>{settings.ttsSpeed.toFixed(1)}×</output>
+      </label>
+      <Btn icon="speaker-off" label="Stop speaking" p={1} class="ghost" title="Stop the current speech and drop queued sentences" onclick={() => speaker.stop()} />
+    {/if}
+  </div>
+</header>
 
-{#if error}<div class="banner error" role="alert">{error}</div>{/if}
-{#if settings.ttsEnabled && tts?.running && usingFallback}
-  <div class="banner warn" role="status">
-    No fine-tune model installed for this voice - using the base model, pronunciation may be wrong. Add a language pack
-    in Models.
+{#if error || (settings.ttsEnabled && tts?.running && usingFallback)}
+  <div class="banners">
+    {#if error}<div class="banner err" role="alert"><Icon name="alert" /><div class="body">{error}</div></div>{/if}
+    {#if settings.ttsEnabled && tts?.running && usingFallback}
+      <div class="banner warn" role="status">
+        <Icon name="alert" />
+        <div class="body">
+          No fine-tune model installed for this voice - using the base model, pronunciation may be wrong. Add a language
+          pack under Speech.
+        </div>
+      </div>
+    {/if}
   </div>
 {/if}
 
-<div class="log" bind:this={log}>
-  {#if !running}
-    <p class="muted center">Ollama is not running. Start it from the top bar.</p>
-  {:else if !models.length}
-    <p class="muted center">No models installed yet. Add one in the Models view.</p>
-  {:else if !messages.length}
-    <p class="muted center">Say hello to {models.find((m) => m.name === settings.lastModel)?.displayName ?? settings.lastModel}.</p>
-  {/if}
-  {#each messages as m, i (i)}
-    {@const streaming = !!opId && i === messages.length - 1 && m.role === 'assistant'}
-    {@const canReplay = ttsOn && m.role === 'assistant' && !streaming && !!m.content}
-    <div class="msg {m.role}">
-      <span class="text">{m.content}</span>{#if streaming}<span class="cursor">▍</span>{/if}
-      {#if m.role === 'assistant'}
-        <!-- Fixed footer: the rate keeps its place whether or not the play button is shown. -->
-        <div class="msg-footer">
-          <span class="tps" title="Generation speed in tokens per second (live estimate while streaming, exact value from Ollama when done)">{m.tps !== undefined ? formatRate(m.tps) : ''}</span>
-          {#if canReplay}
-            <button
-              class="replay"
-              title="Read this reply aloud from the beginning (stops any current speech)"
-              aria-label="Read this reply aloud from the beginning (stops any current speech)"
-              onclick={() => readAloud(m.content)}
-            >
-              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7-4.5z" fill="currentColor" /></svg>
-            </button>
-          {:else}
-            <span class="replay-slot" aria-hidden="true"></span>
-          {/if}
-        </div>
-      {/if}
-    </div>
-  {/each}
+<div class="scroll" bind:this={log}>
+  <div class="msgs">
+    {#if !running || !models.length || !messages.length}
+      <div class="empty">
+        <div class="art"><Icon name={!running ? 'plug' : !models.length ? 'cube' : 'chat'} /></div>
+        {#if !running}
+          <h3>Ollama is not running</h3>
+          <p>Start it with the status light in the sidebar.</p>
+        {:else if !models.length}
+          <h3>No models installed yet</h3>
+          <p>Add one in the Models view.</p>
+        {:else}
+          <h3>Say hello to {models.find((m) => m.name === settings.lastModel)?.displayName ?? settings.lastModel}</h3>
+          <p>Replies are generated locally by Ollama and can be read aloud by Kokoro.</p>
+        {/if}
+      </div>
+    {/if}
+    {#each messages as m, i (i)}
+      {@const streaming = !!opId && i === messages.length - 1 && m.role === 'assistant'}
+      {@const canReplay = ttsOn && m.role === 'assistant' && !streaming && !!m.content}
+      <div class="msg {m.role}">
+        <div class="bubble">{m.content}{#if streaming}<span class="caret" aria-hidden="true"></span>{/if}</div>
+        {#if m.role === 'assistant'}
+          <!-- Fixed footer: the rate keeps its place whether or not the play button is shown. -->
+          <div class="meta">
+            <span class="tps" class:live={streaming} title="Generation speed in tokens per second (live estimate while streaming, exact value from Ollama when done)">{m.tps !== undefined ? formatRate(m.tps) : ''}</span>
+            {#if canReplay}
+              <button
+                type="button"
+                class="replay"
+                title="Read this reply aloud from the beginning (stops any current speech)"
+                aria-label="Read this reply aloud from the beginning (stops any current speech)"
+                onclick={() => readAloud(m.content)}><Icon name="play" /></button
+              >
+            {:else}
+              <span class="replay-slot" aria-hidden="true"></span>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    {/each}
+  </div>
 </div>
 
-<div class="composer">
-  <textarea
-    title={running ? 'Your message; Enter sends it, Shift+Enter adds a new line' : 'Start Ollama to chat'}
-    bind:value={input} onkeydown={onKey} rows="3" placeholder="Type a message (Enter to send, Shift+Enter for a new line)" disabled={!running}></textarea>
-  {#if opId}
-    <button title="Stop generating; the text so far is kept" onclick={stop}>Stop</button>
-  {:else}
-    <button
-      title={!running ? 'Start Ollama first' : !settings.lastModel ? 'Choose a model first' : !input.trim() ? 'Type a message first' : 'Send the message to the model'}
-      onclick={send}
-      disabled={!running || !input.trim() || !settings.lastModel}>Send</button
-    >
-  {/if}
-</div>
+<footer class="composer">
+  <div class="comp-box">
+    <textarea
+      title={running ? 'Your message; Enter sends it, Shift+Enter adds a new line' : 'Start Ollama to chat'}
+      aria-label="Message"
+      bind:value={input}
+      onkeydown={onKey}
+      rows="2"
+      placeholder="Message the model…  Enter to send, Shift+Enter for a new line"
+      disabled={!running}
+    ></textarea>
+    {#if opId}
+      <Btn icon="stop" label="Stop" class="danger" title="Stop generating; the text so far is kept" onclick={stop} />
+    {:else}
+      <Btn
+        icon="send"
+        label="Send"
+        class="primary"
+        title={!running ? 'Start Ollama first' : !settings.lastModel ? 'Choose a model first' : !input.trim() ? 'Type a message first' : 'Send the message to the model'}
+        onclick={send}
+        disabled={!running || !input.trim() || !settings.lastModel}
+      />
+    {/if}
+  </div>
+</footer>

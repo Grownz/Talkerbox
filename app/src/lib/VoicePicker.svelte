@@ -2,6 +2,7 @@
   // Accessible custom listbox: native <select> cannot show images and Windows has no flag emoji glyphs.
   // Flags: flag-icons (MIT), bundled by Vite (small files are inlined as data: URIs, so CSP stays 'self' + data:).
   import { FLAGS } from './flags'
+  import Icon from './Icon.svelte'
   import { groupVoices, type VoiceDetail } from './voices'
 
   let {
@@ -21,8 +22,13 @@
   let button: HTMLButtonElement | undefined = $state()
   let list: HTMLElement | undefined = $state()
   let root: HTMLElement | undefined = $state()
+  // The list is position:fixed so the toolbar's overflow clipping cannot cut it off.
+  let pos = $state('')
 
   function show() {
+    const r = button!.getBoundingClientRect()
+    const top = r.bottom + 4
+    pos = `top:${top}px;left:${Math.max(4, Math.min(r.left, innerWidth - 284))}px;max-height:${Math.max(160, Math.min(360, innerHeight - top - 8))}px`
     open = true
     active = Math.max(0, flat.findIndex((v) => v.id === value))
     queueMicrotask(() => {
@@ -75,7 +81,7 @@
   }
 </script>
 
-<svelte:window onpointerdown={onWindowPointer} />
+<svelte:window onpointerdown={onWindowPointer} onresize={() => open && close(false)} />
 
 {#snippet flag(country: string | null)}
   {#if country && FLAGS[country]}
@@ -92,7 +98,7 @@
   <button
     bind:this={button}
     type="button"
-    class="ghost voice-button"
+    class="vp-btn"
     aria-haspopup="listbox"
     aria-expanded={open}
     aria-label={`Voice: ${current ? `${current.label}, ${current.language}` : 'none'}`}
@@ -102,13 +108,14 @@
     onkeydown={onButtonKey}
   >
     {@render flag(current?.country ?? null)}
-    <span>{current?.label ?? 'Choose voice'}</span>
-    <span aria-hidden="true">▾</span>
+    <span class="vn">{current?.label ?? 'Choose voice'}</span>
+    <Icon name="chev-down" />
   </button>
   {#if open}
     <ul
       bind:this={list}
       class="voice-list"
+      style={pos}
       role="listbox"
       tabindex="-1"
       aria-label="Voice"

@@ -9,10 +9,16 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
 - **Ollama discovery**: checks `http://127.0.0.1:11434/api/version` first, then looks for `ollama.exe` at the saved
   path, on `PATH`, in `%LOCALAPPDATA%\Programs\Ollama`, and in `C:\Program Files\Ollama`. If none is found, a dialog asks
   for the folder or exe. The path is checked and then saved.
-- **Start/stop `ollama serve`**: click the status LED in the top bar (its tooltip says what a click does). Only a server
+- **Start/stop `ollama serve`**: click the status light in the sidebar or on the Server page (its tooltip says what a click does). Only a server
   that Talkerbox started can be stopped. When the window closes, that server is killed together with its runner
   processes. Spawned processes are also placed in a Windows job object with kill-on-close, so they die even if
   Talkerbox crashes or is killed.
+- **Layout**: a left sidebar with Chat, Models, Speech and Server pages and the Ollama status at the bottom. Below
+  1024 px window width it collapses to a 64 px icon rail. Toolbar buttons shorten their labels, then become icons
+  (tooltip and accessible name stay) when space runs out; text inputs shrink first. The window cannot be made smaller
+  than 720 x 520.
+- **Light/dark mode**: follows the Windows setting by default. The sun/moon switch at the bottom of the sidebar
+  overrides it; the choice is kept in the webview's localStorage.
 - **Chat**: streamed replies (`/api/chat`), model picker (`/api/tags`), history kept in memory, stop button.
 - **Models**: pull from a HuggingFace link, `hf.co/user/repo[:quant]` or a library name (`/api/pull`, with progress).
   You can also import a `.gguf` from any direct URL: it downloads with resume, is uploaded through `/api/blobs`, and is
@@ -33,7 +39,7 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   at the last space or comma (the sidecar rejects texts over 2000). TTS start, stop and restart run one at a time.
   Stopping closes the sidecar's stdin and waits up to 3 s before killing it: only a clean exit lets the PyInstaller
   exe delete its `%TEMP%\_MEI*` folder. App exit uses the same path, and the job object stays as a safety net.
-- **Extra voices**: in Models, "Add voice from link…" accepts a HuggingFace link (`/blob/` pages are turned into
+- **Extra voices**: on the Speech page, "Add model or voice from link" accepts a HuggingFace link (`/blob/` pages are turned into
   `/resolve/` links) or any direct URL to a `.pt`/`.npy`/`.npz`/`.bin` file of at most 50 MB. Files are stored in
   `tts\voices` in the local app data dir. The sidecar gets `--voices-dir` when that folder holds a voice file, and a
   running sidecar is restarted after a voice is added or deleted. The voice id is the file stem, so a link whose stem
@@ -70,7 +76,7 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   reports this (`details[].fallback` from `/voices`, or `X-TTS-Fallback: 1` on a synthesize response), a single hint
   appears under the chat toolbar while that voice is selected. `tts_synthesize` passes the header to the webview as a
   leading flag byte before the WAV.
-- **Ollama terminal**: the `>_` button next to the status LED opens a read-only view of the stdout/stderr of the
+- **Ollama terminal**: the Log button under the status light (or Open log on the Server page) opens a read-only view of the stdout/stderr of the
   `ollama serve` that Talkerbox started. It keeps a ring buffer of the last 5000 lines and receives new lines through
   `ollama-log` events. It scrolls automatically and pauses while you are scrolled up; Clear empties it. Output of an
   externally started Ollama cannot be captured, and the view says so.
@@ -127,7 +133,7 @@ app/src-tauri/binaries/tts-sidecar-x86_64-pc-windows-msvc.exe
 ```
 
 Without the real exe, an empty placeholder with that name lets builds succeed. Talkerbox treats an empty or missing
-file as unavailable and shows the paths it checked in the Models view; everything else keeps working. To enable speech,
+file as unavailable and shows the paths it checked on the Speech page; everything else keeps working. To enable speech,
 build `../tts-sidecar` and copy the result over the placeholder under the name above, then rebuild.
 
 Where the app looks for the sidecar:
@@ -142,7 +148,7 @@ The sidecar is started as
 sidecar exits when that pipe closes, so it never outlives the app. The app waits for `GET /health`, reads
 `GET /voices`, and sends `POST /synthesize` (`{"text","voice","speed"}` -> WAV) for each sentence.
 
-Kokoro files: **Models -> Text-to-speech model** shows them as installed once a `.onnx` of at least 20 MB and a
+Kokoro files: **Speech -> Text-to-speech model** shows them as installed once a `.onnx` of at least 20 MB and a
 `.bin` of at least 1 MB are present (`kokoro-v1.0.onnx` and `voices-v1.0.bin` are preferred). In that state the
 download buttons are hidden behind "Re-download…", and "Delete files" removes them. You can also choose "Use existing
 folder…" (for example `tts-sidecar\models`). Files in a folder you chose are never deleted by the app.
@@ -157,7 +163,7 @@ folder…" (for example `tts-sidecar\models`). Files in a folder you chose are n
 ## Layout
 
 ```
-src/                 Svelte UI (App, Chat, Models, path dialog, speaker queue, typed API wrappers)
+src/                 Svelte UI (App shell, Chat, Models/Speech, path dialog, theme, fit toolbars, speaker queue, typed API wrappers)
 src-tauri/src/
   lib.rs             Tauri commands, app state, process handling
   ollama.rs          Ollama HTTP client (chat, tags, pull, delete, blobs/create) + `ollama serve`
