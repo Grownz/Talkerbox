@@ -16,7 +16,10 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
 - **Chat**: streamed replies (`/api/chat`), model picker (`/api/tags`), history kept in memory, stop button.
 - **Models**: pull from a HuggingFace link, `hf.co/user/repo[:quant]` or a library name (`/api/pull`, with progress).
   You can also import a `.gguf` from any direct URL: it downloads with resume, is uploaded through `/api/blobs`, and is
-  imported through `/api/create` with `files`. The view lists and deletes models and downloads the TTS model files.
+  imported through `/api/create` with `files`. The file goes to `gguf\<first 16 hex chars of sha256(url)>\`. A retry
+  after a failed import reuses the finished file, and the folder is deleted once Ollama has imported it. Every
+  download's partial file is named `<file>.<url hash>.part`, so a resume never mixes data from two URLs. The view
+  lists and deletes models and downloads the TTS model files.
 - **Short display names**: `hf.co/owner/Repo-GGUF:Q4_K_M` is shown as `Repo Q4_K_M`. GGUF imports from HuggingFace use
   the repo id from the HF API plus the quant parsed from the file name. Other hosts use the file name without its
   extension, cut to 50 characters. Names are stored in settings, keyed by the Ollama id; the id itself never changes.
@@ -26,11 +29,17 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   the reason is shown. Unchecking stops the sidecar and all speech at once. With the setting on, TTS starts
   automatically when the app opens. Replies are spoken sentence by sentence (queued, played with WebAudio). There is a
   stop button and a speed slider. Each finished assistant reply gets a green play button that re-reads it from the
-  start and cancels any current speech.
+  start and cancels any current speech. Sentences also end at CJK `。！？`, and any piece over 1500 characters is cut
+  at the last space or comma (the sidecar rejects texts over 2000). TTS start, stop and restart run one at a time.
+  Stopping closes the sidecar's stdin and waits up to 3 s before killing it: only a clean exit lets the PyInstaller
+  exe delete its `%TEMP%\_MEI*` folder. App exit uses the same path, and the job object stays as a safety net.
 - **Extra voices**: in Models, "Add voice from link…" accepts a HuggingFace link (`/blob/` pages are turned into
   `/resolve/` links) or any direct URL to a `.pt`/`.npy`/`.npz`/`.bin` file of at most 50 MB. Files are stored in
   `tts\voices` in the local app data dir. The sidecar gets `--voices-dir` when that folder holds a voice file, and a
-  running sidecar is restarted after a voice is added or deleted. The voice id is the file stem.
+  running sidecar is restarted after a voice is added or deleted. The voice id is the file stem, so a link whose stem
+  is not `[A-Za-z0-9_-]{1,64}` is rejected before downloading. After a pack is installed or changed, the app checks
+  that the restarted sidecar lists the pack. If it does not, an error points to `logs\sidecar.log`; the files stay
+  installed.
 - **Language packs** (Kokoro fine-tunes for other languages): "Add model or voice from link…" picks the action from
   the file extension. Voice files are installed as above. An `.onnx` link opens a "New language pack" dialog with these
   fields:

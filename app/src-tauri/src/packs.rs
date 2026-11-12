@@ -38,7 +38,9 @@ pub fn slug(name: &str) -> String {
 }
 
 /// Slug that does not collide with an existing id (`name`, `name-2`, `name-3`, ...).
+/// `base` is reserved by the sidecar for the built-in model.
 pub fn unique_id(name: &str, taken: impl Fn(&str) -> bool) -> String {
+    let taken = |c: &str| c == "base" || taken(c);
     let base = slug(name);
     if !taken(&base) {
         return base;
@@ -105,6 +107,7 @@ mod tests {
         let taken = ["german", "german-2"];
         assert_eq!(unique_id("German", |c| taken.contains(&c)), "german-3");
         assert_eq!(unique_id("Polish", |c| taken.contains(&c)), "polish");
+        assert_eq!(unique_id("Base", |_| false), "base-2");
     }
 
     #[test]

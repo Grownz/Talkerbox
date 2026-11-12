@@ -135,6 +135,7 @@ mod tests {
             assert!(crate::packs::slug(f.id) == f.id, "id must be a valid slug: {}", f.id);
             assert!(f.model.file.ends_with(".onnx") && f.model.url.starts_with("https://huggingface.co/"));
             for v in f.voices {
+                assert!(crate::tts::voice_url(v.url).is_ok(), "featured voice link must pass voice checks: {}", v.url);
                 if v.convert == Convert::RawStyleToNpy {
                     assert_eq!(v.size, 510 * 256 * 4);
                     assert!(v.file.ends_with(".npy"));

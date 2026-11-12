@@ -1,8 +1,6 @@
 // Sentence-by-sentence speech: streamed text in, WebAudio playback out.
 import { api, errText } from './api'
-
-// A sentence ends at . ! ? or an ellipsis followed by whitespace (optionally after a closing quote/bracket), or at a newline.
-const SENTENCE_END = /[.!?…]+["')\]]*\s+|\n+/
+import { chunkLong, splitSentences } from './sentences'
 
 /** Removes markdown syntax that would otherwise be read aloud. */
 export function speakable(s: string): string {
@@ -37,13 +35,9 @@ export class Speaker {
 
   /** Feeds streamed text; every completed sentence is queued for synthesis. */
   feed(text: string) {
-    this.pending += text
-    let m: RegExpExecArray | null
-    while ((m = SENTENCE_END.exec(this.pending))) {
-      const end = m.index + m[0].length
-      this.enqueue(this.pending.slice(0, end))
-      this.pending = this.pending.slice(end)
-    }
+    const { sentences, rest } = splitSentences(this.pending + text)
+    this.pending = rest
+    for (const s of sentences) this.enqueue(s)
   }
 
   /** Queues whatever text is left (end of reply). */
@@ -64,7 +58,7 @@ export class Speaker {
   private enqueue(raw: string) {
     const text = speakable(raw)
     if (!/[\p{L}\p{N}]/u.test(text)) return
-    this.queue.push(text)
+    this.queue.push(...chunkLong(text))
     void this.run()
   }
 

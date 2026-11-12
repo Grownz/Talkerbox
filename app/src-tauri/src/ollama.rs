@@ -52,6 +52,19 @@ pub async fn check(resp: reqwest::Response) -> Result<reqwest::Response, String>
     Err(format!("HTTP {status}: {msg}"))
 }
 
+/// Removes every complete, non-blank line from `buf`; a trailing partial line (which may end inside a
+/// multi-byte UTF-8 character) stays for the next chunk.
+fn take_lines(buf: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    while let Some(i) = buf.iter().position(|&b| b == b'\n') {
+        let line: Vec<u8> = buf.drain(..=i).collect();
+        if !line.iter().all(u8::is_ascii_whitespace) {
+            out.push(line);
+        }
+    }
+    out
+}
+
 /// Reads a newline-delimited JSON stream, calling `on` per object. Returns Ok(true) if cancelled.
 pub async fn ndjson<T: DeserializeOwned>(
     mut resp: reqwest::Response,
@@ -65,16 +78,11 @@ pub async fn ndjson<T: DeserializeOwned>(
             c = resp.chunk() => c.map_err(net_err)?,
         };
         let end = chunk.is_none();
-        if let Some(c) = chunk {
-            buf.extend_from_slice(&c);
-        } else {
-            buf.push(b'\n');
+        match chunk {
+            Some(c) => buf.extend_from_slice(&c),
+            None => buf.push(b'\n'), // flush a last line without trailing newline
         }
-        while let Some(i) = buf.iter().position(|&b| b == b'\n') {
-            let line: Vec<u8> = buf.drain(..=i).collect();
-            if line.iter().all(u8::is_ascii_whitespace) {
-                continue;
-            }
+        for line in take_lines(&mut buf) {
             let v: Value = serde_json::from_slice(&line).map_err(|e| format!("Bad response from Ollama: {e}"))?;
             if let Some(err) = v.get("error").and_then(Value::as_str) {
                 return Err(err.to_string());
@@ -228,4 +236,58 @@ pub fn spawn_serve(exe: &Path) -> Result<std::process::Child, String> {
     crate::hidden(&mut cmd);
     cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     cmd.spawn().map_err(|e| format!("Failed to start {}: {e}", exe.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testsrv::{response, serve};
+
+    #[test]
+    fn lines_reassemble_across_chunks() {
+        let stream = "{\"a\":\"Grüße\"}\n\n{\"a\":\"日本\"}\r\n{\"a\":3}".as_bytes();
+        // Split at every possible position, including inside multi-byte characters.
+        for cut in 0..stream.len() {
+            let mut buf = Vec::new();
+            let mut lines = Vec::new();
+            for part in [&stream[..cut], &stream[cut..], b"\n"] {
+                buf.extend_from_slice(part);
+                lines.extend(take_lines(&mut buf));
+            }
+            let parsed: Vec<Value> = lines.iter().map(|l| serde_json::from_slice(l).unwrap()).collect();
+            assert_eq!(parsed, vec![json!({"a":"Grüße"}), json!({"a":"日本"}), json!({"a":3})], "cut at {cut}");
+            assert!(buf.is_empty());
+        }
+    }
+
+    #[derive(Deserialize)]
+    struct Line {
+        n: u32,
+    }
+
+    fn stream(body: &'static str) -> (Result<bool, String>, Vec<u32>) {
+        let base = serve(1, move |_| response("200 OK", None, body.as_bytes()));
+        let mut seen = Vec::new();
+        let r = tauri::async_runtime::block_on(async {
+            let resp = reqwest::get(&base).await.unwrap();
+            ndjson(resp, &Notify::new(), |l: Line| {
+                seen.push(l.n);
+                Ok(())
+            })
+            .await
+        });
+        (r, seen)
+    }
+
+    #[test]
+    fn ndjson_parses_last_line_without_newline() {
+        assert_eq!(stream("{\"n\":1}\n{\"n\":2}"), (Ok(false), vec![1, 2]));
+    }
+
+    #[test]
+    fn ndjson_surfaces_ollama_errors() {
+        let (r, seen) = stream("{\"n\":1}\n{\"error\":\"model not found\"}\n{\"n\":2}\n");
+        assert_eq!(r, Err("model not found".into()));
+        assert_eq!(seen, vec![1]);
+    }
 }

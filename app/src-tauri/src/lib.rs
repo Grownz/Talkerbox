@@ -7,6 +7,8 @@ mod names;
 mod ollama;
 mod packs;
 mod term;
+#[cfg(test)]
+mod testsrv;
 mod tts;
 
 use config::Settings;
@@ -124,6 +126,8 @@ struct AppState {
     ollama: Mutex<Option<Child>>,
     ollama_log: Arc<Mutex<term::LogBuf>>,
     tts: Mutex<TtsProc>,
+    /// Serialises TTS start/stop/restart (held across awaits, hence tokio's mutex).
+    tts_life: tokio::sync::Mutex<()>,
     cancels: Mutex<HashMap<String, Arc<Notify>>>,
     job: Option<KillJob>,
 }
@@ -140,11 +144,19 @@ impl AppState {
         self.cancels.lock().unwrap().insert(id.to_string(), n.clone());
         OpGuard { state: self, id: id.to_string(), notify: n }
     }
+    /// App exit: Ollama is killed with its runners; the sidecar gets the same graceful stop as `tts_stop`.
     fn kill_children(&self) {
         if let Some(mut c) = self.ollama.lock().unwrap().take() {
             kill_tree(&mut c);
         }
-        stop_tts_proc(self);
+        let tts = {
+            let mut t = self.tts.lock().unwrap();
+            t.port = None;
+            t.child.take()
+        };
+        if let Some(c) = tts {
+            stop_gracefully(c);
+        }
     }
 }
 
@@ -303,11 +315,15 @@ async fn delete_model(app: AppHandle, state: State<'_, AppState>, name: String) 
     Ok(())
 }
 
-/// Canonical HF repo id from the HuggingFace API (bounded timeout); None on any failure.
-async fn hf_repo_id(http: &reqwest::Client, repo: &str) -> Option<String> {
+/// HuggingFace model metadata (`/api/models/{repo}`) with a 5 s timeout; None on any failure.
+async fn hf_model_json(http: &reqwest::Client, repo: &str) -> Option<serde_json::Value> {
     let url = format!("https://huggingface.co/api/models/{repo}");
-    let v: serde_json::Value = http.get(url).timeout(Duration::from_secs(5)).send().await.ok()?.error_for_status().ok()?.json().await.ok()?;
-    v.get("id").and_then(|i| i.as_str()).map(str::to_owned)
+    http.get(url).timeout(Duration::from_secs(5)).send().await.ok()?.error_for_status().ok()?.json().await.ok()
+}
+
+/// Canonical HF repo id; None on any failure.
+async fn hf_repo_id(http: &reqwest::Client, repo: &str) -> Option<String> {
+    hf_model_json(http, repo).await?.get("id").and_then(|i| i.as_str()).map(str::to_owned)
 }
 
 /// Streams reply tokens over `on_token`. Resolves with cancellation flag and Ollama's final eval stats.
@@ -355,17 +371,19 @@ async fn import_gguf_url(
     let model_name = model_name.trim();
     valid_model_name(model_name)?;
     let (url, file) = download::safe_file_name(&url)?;
-    let dest = data_dir(&app)?.join("gguf").join(&file);
+    // One folder per URL: resume never mixes files, and a finished download is reused when an import is retried.
+    let folder = data_dir(&app)?.join("gguf").join(download::url_hash(url.as_str()));
+    let dest = folder.join(&file);
     let hf_repo = names::hf_repo_from_url(&url);
     let op = state.op(&id);
-    if download::download(&state.http, url, &dest, None, &op.notify, |p| send(&on_progress, p)).await? {
+    if !dest.is_file() && download::download(&state.http, url, &dest, None, &op.notify, |p| send(&on_progress, p)).await? {
         return Ok(true);
     }
     if ollama::import_gguf(&state.http, &dest, model_name, &op.notify, |p| send(&on_progress, p)).await? {
         return Ok(true);
     }
     // Ollama keeps its own copy of the blob; drop ours to avoid storing the model twice.
-    let _ = tokio::fs::remove_file(&dest).await;
+    let _ = tokio::fs::remove_dir_all(&folder).await;
     let repo = match hf_repo {
         Some(r) => Some(hf_repo_id(&state.http, &r).await.unwrap_or(r)),
         None => None,
@@ -458,15 +476,18 @@ fn set_tts_model_dir(app: AppHandle, state: State<'_, AppState>, path: Option<St
 
 /// Deletes the Kokoro files from the app data dir (never from a user-chosen folder).
 #[tauri::command]
-fn delete_tts_files(app: AppHandle, state: State<'_, AppState>) -> Res<TtsStatus> {
+async fn delete_tts_files(app: AppHandle, state: State<'_, AppState>) -> Res<TtsStatus> {
     let (dir, custom) = tts_dir(&app)?;
     if custom {
         return Err("Files in a user-chosen folder are not deleted; switch back to the default folder instead".into());
     }
-    stop_tts_proc(&state);
-    if let Some((m, v)) = tts::model_files(&dir) {
-        for f in [m, v] {
-            std::fs::remove_file(&f).map_err(|e| format!("{}: {e}", f.display()))?;
+    {
+        let _life = state.tts_life.lock().await;
+        stop_tts_locked(&state).await;
+        if let Some((m, v)) = tts::model_files(&dir) {
+            for f in [m, v] {
+                std::fs::remove_file(&f).map_err(|e| format!("{}: {e}", f.display()))?;
+            }
         }
     }
     tts_status(app, state)
@@ -483,15 +504,6 @@ async fn download_tts_file(app: AppHandle, state: State<'_, AppState>, id: Strin
 /// Extra voices live in `tts/voices` of the app data dir (never in a user-chosen model folder).
 fn voices_dir(app: &AppHandle) -> Res<PathBuf> {
     Ok(data_dir(app)?.join("tts").join("voices"))
-}
-
-/// Restarts a running sidecar so it rescans the voices folder.
-async fn restart_tts_if_running(app: &AppHandle, state: &State<'_, AppState>) -> Res<()> {
-    if state.tts.lock().unwrap().port.is_some() {
-        stop_tts_proc(state);
-        tts_start(app.clone(), state.clone()).await?;
-    }
-    Ok(())
 }
 
 fn packs_dir(app: &AppHandle) -> Res<PathBuf> {
@@ -516,16 +528,12 @@ async fn tts_link_info(state: State<'_, AppState>, url: String) -> Res<LinkInfo>
         let (u, file) = download::safe_file_name(tts::direct_url(&url)?.as_ref())?;
         let repo = names::hf_repo_from_url(&u);
         info.name = names::for_import(repo.as_deref(), &file);
-        if let Some(repo) = repo {
-            let api = format!("https://huggingface.co/api/models/{repo}");
-            let resp = state.http.get(api).timeout(Duration::from_secs(5)).send().await.ok().and_then(|r| r.error_for_status().ok());
-            if let Some(v) = match resp {
-                Some(r) => r.json::<serde_json::Value>().await.ok(),
-                None => None,
-            } {
-                let tags: Vec<String> = serde_json::from_value(v["tags"].clone()).unwrap_or_default();
-                info.languages = packs::languages_from_tags(&tags);
-            }
+        if let Some(v) = match repo {
+            Some(r) => hf_model_json(&state.http, &r).await,
+            None => None,
+        } {
+            let tags: Vec<String> = serde_json::from_value(v["tags"].clone()).unwrap_or_default();
+            info.languages = packs::languages_from_tags(&tags);
         }
     }
     Ok(info)
@@ -615,12 +623,7 @@ async fn create_pack(
     .await;
 
     match result {
-        Ok(Some(pack)) => {
-            packs::write_manifest(&folder, &pack)?;
-            send(&on_progress, Progress { message: "Restarting TTS to load the pack".into(), completed: None, total: None });
-            restart_tts_if_running(&app, &state).await?;
-            Ok(false)
-        }
+        Ok(Some(pack)) => finish_pack(&app, &state, &folder, &pack, &on_progress).await.map(|_| false),
         // Cancelled or failed: remove the incomplete pack folder.
         other => {
             let _ = std::fs::remove_dir_all(&folder);
@@ -712,10 +715,7 @@ async fn install_featured(app: AppHandle, state: State<'_, AppState>, id: String
                 vocab: None,
                 voices: f.voices.iter().map(|v| v.file.to_string()).collect(),
             };
-            packs::write_manifest(&folder, &pack)?;
-            send(&on_progress, Progress { message: "Restarting TTS to load the pack".into(), completed: None, total: None });
-            restart_tts_if_running(&app, &state).await?;
-            Ok(false)
+            finish_pack(&app, &state, &folder, &pack, &on_progress).await.map(|_| false)
         }
         other => {
             let _ = std::fs::remove_dir_all(&folder);
@@ -741,20 +741,36 @@ async fn add_pack_voice(app: AppHandle, state: State<'_, AppState>, id: String, 
             pack.voices.push(f);
         }
     }
-    packs::write_manifest(&folder, &pack)?;
-    restart_tts_if_running(&app, &state).await?;
-    Ok(false)
+    finish_pack(&app, &state, &folder, &pack, &on_progress).await.map(|_| false)
+}
+
+/// Shared tail of every pack install/change: write pack.json (last, so the sidecar never sees half a pack),
+/// restart a running sidecar and confirm it really loaded the pack. Installed files stay on failure.
+async fn finish_pack(app: &AppHandle, state: &AppState, folder: &Path, pack: &packs::Pack, ch: &Channel<Progress>) -> Res<()> {
+    packs::write_manifest(folder, pack)?;
+    send(ch, Progress { message: "Restarting TTS to load the pack".into(), completed: None, total: None });
+    restart_tts_if_running(app, state).await?;
+    let Some(port) = state.tts.lock().unwrap().port else {
+        return Ok(()); // TTS is off: nothing to check now.
+    };
+    let list = tts::voices(&state.http, port).await?;
+    if list.details.iter().any(|d| d.pack.as_deref() == Some(pack.id.as_str())) {
+        Ok(())
+    } else {
+        Err(format!("Pack '{}' was installed but not loaded by the speech engine; see logs\\sidecar.log in the app data folder", pack.id))
+    }
 }
 
 #[tauri::command]
 async fn delete_pack(app: AppHandle, state: State<'_, AppState>, pack_id: String) -> Res<()> {
     let (folder, _) = find_pack(&app, &pack_id)?;
+    let _life = state.tts_life.lock().await;
     // Stop first: the sidecar may hold the model file open.
     let was_running = state.tts.lock().unwrap().port.is_some();
-    stop_tts_proc(&state);
+    stop_tts_locked(&state).await;
     std::fs::remove_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
     if was_running {
-        tts_start(app.clone(), state.clone()).await?;
+        start_tts_locked(&app, &state).await?;
     }
     Ok(())
 }
@@ -789,41 +805,91 @@ async fn delete_custom_voice(app: AppHandle, state: State<'_, AppState>, name: S
     restart_tts_if_running(&app, &state).await
 }
 
-#[tauri::command]
-async fn tts_start(app: AppHandle, state: State<'_, AppState>) -> Res<TtsStatus> {
-    if state.tts.lock().unwrap().port.is_none() {
-        let exe = tts::sidecar_path()?;
-        let (model, voices) = tts::model_files(&tts_dir(&app)?.0).ok_or("Kokoro model files are missing; download them in the Models view")?;
-        let (child, port) = tts::spawn(&exe, &model, &voices, tts::voices_dir_arg(&voices_dir(&app)?), packs::dir_arg(&packs_dir(&app)?), &data_dir(&app)?.join("logs").join("sidecar.log"))?;
-        state.track(&child);
-        state.tts.lock().unwrap().child = Some(child);
-        let ready = tts::wait_ready(&state.http, port, || state.tts.lock().unwrap().child.as_mut().and_then(exited)).await;
-        let mut t = state.tts.lock().unwrap();
-        match ready {
-            Ok(()) => t.port = Some(port),
-            Err(e) => {
-                if let Some(mut c) = t.child.take() {
-                    kill_tree(&mut c);
-                }
-                return Err(e);
-            }
+// TTS lifecycle: every start/stop/restart holds `state.tts_life`, so parallel calls run one after another
+// and each sees the state the previous one left. The `*_locked` helpers expect the caller to hold it.
+
+/// Starts the sidecar unless it is already running.
+async fn start_tts_locked(app: &AppHandle, state: &AppState) -> Res<()> {
+    if state.tts.lock().unwrap().port.is_some() {
+        return Ok(());
+    }
+    let exe = tts::sidecar_path()?;
+    let (model, voices) = tts::model_files(&tts_dir(app)?.0).ok_or("Kokoro model files are missing; download them in the Models view")?;
+    let (child, port) = tts::spawn(
+        &exe,
+        &model,
+        &voices,
+        tts::voices_dir_arg(&voices_dir(app)?),
+        packs::dir_arg(&packs_dir(app)?),
+        &data_dir(app)?.join("logs").join("sidecar.log"),
+    )?;
+    state.track(&child);
+    state.tts.lock().unwrap().child = Some(child);
+    let ready = tts::wait_ready(&state.http, port, || state.tts.lock().unwrap().child.as_mut().and_then(exited)).await;
+    match ready {
+        Ok(()) => {
+            state.tts.lock().unwrap().port = Some(port);
+            Ok(())
+        }
+        Err(e) => {
+            stop_tts_locked(state).await;
+            Err(e)
         }
     }
+}
+
+/// Takes the sidecar out of the state and stops it (see `stop_gracefully`).
+async fn stop_tts_locked(state: &AppState) {
+    let child = {
+        let mut t = state.tts.lock().unwrap();
+        t.port = None;
+        t.child.take()
+    };
+    if let Some(c) = child {
+        let _ = tauri::async_runtime::spawn_blocking(move || stop_gracefully(c)).await;
+    }
+}
+
+/// Closes the child's stdin and waits up to 3 s for it to exit before killing it. The sidecar exits on stdin
+/// EOF, and only a clean exit lets its PyInstaller bootloader delete the unpacked `%TEMP%\_MEI*` folder.
+fn stop_gracefully(mut c: Child) {
+    drop(c.stdin.take());
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if c.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    kill_tree(&mut c);
+}
+
+/// Restarts a running sidecar so it rescans voices and packs (also right after a start that was in progress).
+async fn restart_tts_if_running(app: &AppHandle, state: &AppState) -> Res<()> {
+    let _life = state.tts_life.lock().await;
+    if state.tts.lock().unwrap().port.is_some() {
+        stop_tts_locked(state).await;
+        start_tts_locked(app, state).await?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn tts_start(app: AppHandle, state: State<'_, AppState>) -> Res<TtsStatus> {
+    {
+        let _life = state.tts_life.lock().await;
+        start_tts_locked(&app, &state).await?;
+    }
     tts_status(app, state)
 }
 
 #[tauri::command]
-fn tts_stop(app: AppHandle, state: State<'_, AppState>) -> Res<TtsStatus> {
-    stop_tts_proc(&state);
-    tts_status(app, state)
-}
-
-fn stop_tts_proc(state: &AppState) {
-    let mut t = state.tts.lock().unwrap();
-    if let Some(mut c) = t.child.take() {
-        kill_tree(&mut c);
+async fn tts_stop(app: AppHandle, state: State<'_, AppState>) -> Res<TtsStatus> {
+    {
+        let _life = state.tts_life.lock().await;
+        stop_tts_locked(&state).await;
     }
-    t.port = None;
+    tts_status(app, state)
 }
 
 fn tts_port(state: &AppState) -> Res<u16> {
@@ -861,6 +927,7 @@ pub fn run() {
             ollama: Mutex::new(None),
             ollama_log: Arc::default(),
             tts: Mutex::default(),
+            tts_life: tokio::sync::Mutex::new(()),
             cancels: Mutex::default(),
             job: KillJob::new(),
         })

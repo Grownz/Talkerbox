@@ -128,8 +128,23 @@ pub fn url_of_kind(input: &str, kind: LinkKind) -> Result<String, String> {
     Ok(direct_url(input)?.to_string())
 }
 
+/// Voice ids are file stems and the sidecar accepts only `[A-Za-z0-9_-]{1,64}`.
+pub fn valid_voice_stem(stem: &str) -> bool {
+    (1..=64).contains(&stem.len()) && stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Validated voice download URL. The file stem becomes the voice id, so it is checked here (before any download)
+/// instead of being silently rewritten.
 pub fn voice_url(input: &str) -> Result<String, String> {
-    url_of_kind(input, LinkKind::Voice)
+    let url = url_of_kind(input, LinkKind::Voice)?;
+    let u = reqwest::Url::parse(&url).map_err(|e| e.to_string())?;
+    let stem = file_of(&u).rsplit_once('.').map_or("", |(s, _)| s);
+    if !valid_voice_stem(stem) {
+        return Err(format!(
+            "The voice file name '{stem}' becomes the voice id and may only contain letters, digits, '_' and '-' (max 64 characters)"
+        ));
+    }
+    Ok(url)
 }
 
 /// Optional folder of extra voices, passed to the sidecar only when it holds at least one voice file.
@@ -264,6 +279,10 @@ mod tests {
         assert_eq!(voice_url(" https://example.com/v/bf_test.NPZ ").as_deref(), Ok("https://example.com/v/bf_test.NPZ"));
         assert!(voice_url("https://example.com/model.gguf").is_err());
         assert!(voice_url("https://example.com/.pt").is_err());
+        assert!(voice_url("https://example.com/my%20voice.pt").unwrap_err().contains("voice id"));
+        assert!(voice_url("https://example.com/v.1.npy").is_err());
+        assert!(voice_url(&format!("https://example.com/{}.npy", "a".repeat(65))).is_err());
+        assert!(voice_url("https://example.com/df_kerstin-2.bin").is_ok());
         assert!(voice_url("not a url").is_err());
     }
 }
