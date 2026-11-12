@@ -86,7 +86,7 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   TTS on/off and speed.
 
 Downloads, logs and TTS models are stored in the local app data dir (`%LOCALAPPDATA%\com.talkerbox.app`): `gguf\` (temporary),
-`tts\`, and `logs\ollama-serve.log` and `logs\sidecar.log`.
+`tts\` and `logs\sidecar.log`. Ollama's output is not written to disk: it is kept in memory for the terminal view.
 
 ## Prerequisites
 

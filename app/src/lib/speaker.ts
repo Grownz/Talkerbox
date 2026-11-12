@@ -1,6 +1,6 @@
 // Sentence-by-sentence speech: streamed text in, WebAudio playback out.
 import { api, errText } from './api'
-import { chunkLong, splitSentences } from './sentences'
+import { chunkLong, SpeechText } from './sentences'
 
 /** Removes markdown syntax that would otherwise be read aloud. */
 export function speakable(s: string): string {
@@ -20,7 +20,7 @@ export class Speaker {
   onFallback: (voice: string) => void = () => {}
 
   private ctx: AudioContext | null = null
-  private pending = ''
+  private text = new SpeechText()
   private queue: string[] = []
   private gen = 0
   private working = false
@@ -35,21 +35,18 @@ export class Speaker {
 
   /** Feeds streamed text; every completed sentence is queued for synthesis. */
   feed(text: string) {
-    const { sentences, rest } = splitSentences(this.pending + text)
-    this.pending = rest
-    for (const s of sentences) this.enqueue(s)
+    for (const s of this.text.feed(text)) this.enqueue(s)
   }
 
   /** Queues whatever text is left (end of reply). */
   flush() {
-    this.enqueue(this.pending)
-    this.pending = ''
+    for (const s of this.text.flush()) this.enqueue(s)
   }
 
   stop() {
     this.gen++
     this.queue = []
-    this.pending = ''
+    this.text = new SpeechText()
     for (const s of this.sources) s.stop()
     this.sources.clear()
     this.nextStart = 0

@@ -227,8 +227,6 @@ pub struct VoiceDetail {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VoiceList {
     pub voices: Vec<String>,
-    /// Missing from older sidecars.
-    #[serde(default)]
     pub details: Vec<VoiceDetail>,
 }
 

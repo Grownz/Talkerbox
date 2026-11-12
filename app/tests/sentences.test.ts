@@ -34,3 +34,38 @@ test('text without break points is hard-cut; short text is untouched', () => {
   assert.deepEqual(chunkLong('Short.'), ['Short.'])
   assert.deepEqual(chunkLong('   '), [])
 })
+
+import { SpeechText } from '../src/lib/sentences.ts'
+
+/** Feeds chunks into a fresh SpeechText and returns everything it would speak. */
+function speak(...chunks: string[]): string[] {
+  const s = new SpeechText()
+  return [...chunks.flatMap((c) => s.feed(c)), ...s.flush()].map((x) => x.trim())
+}
+
+const reply = 'Here is code:\n```python\nprint("hi")\nx = 1\n```\nThat prints hi. Done'
+
+test('fenced code in one chunk is skipped', () => {
+  assert.deepEqual(speak(reply), ['Here is code:', 'That prints hi.', 'Done'])
+})
+
+test('fence markers split across stream chunks are still detected', () => {
+  // Every possible single split point, plus character-by-character streaming.
+  for (let i = 0; i <= reply.length; i++) {
+    assert.deepEqual(speak(reply.slice(0, i), reply.slice(i)), ['Here is code:', 'That prints hi.', 'Done'], `split at ${i}`)
+  }
+  assert.deepEqual(speak(...reply), ['Here is code:', 'That prints hi.', 'Done'])
+})
+
+test('an unclosed fence at the end stays silent, and the next reply starts fresh', () => {
+  const s = new SpeechText()
+  const first = [...s.feed('Look:\n```js\nconst a = 1\n'), ...s.flush()].map((x) => x.trim())
+  assert.deepEqual(first, ['Look:'])
+  assert.deepEqual([...s.feed('Next reply. '), ...s.flush()].map((x) => x.trim()), ['Next reply.'])
+})
+
+test('inline code and backticks inside a line are kept for the markdown cleanup', () => {
+  assert.deepEqual(speak('Use `npm test` to run it. '), ['Use `npm test` to run it.'])
+  assert.deepEqual(speak('`x` is a variable. '), ['`x` is a variable.'])
+  assert.deepEqual(speak('Indented:\n  ```\n  code\n  ```\nEnd.'), ['Indented:', 'End.'])
+})
