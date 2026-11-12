@@ -12,6 +12,16 @@ export interface Settings {
   sttLanguage: string
   /** Seconds without transcript change before dictated text is sent. */
   sttIdleSecs: number
+  /** Speech input microphone by name; null = system default. */
+  sttDevice: string | null
+  /** Start the Ollama server when the app opens. */
+  ollamaAutostart: boolean
+}
+
+export interface InputDevice {
+  name: string
+  /** The Windows default recording device. */
+  default: boolean
 }
 
 export interface SttStatus {
@@ -173,9 +183,17 @@ export const api = {
   sttStatus: () => invoke<SttStatus>('stt_status'),
   sttDownload: (id: string, lang: string, onProgress: (p: Progress) => void) =>
     invoke<boolean>('stt_download', { id, lang, onProgress: channel(onProgress) }),
-  /** Transcript arrives as `stt://partial`/`stt://final` events, the idle-timeout text as `stt://send`. */
-  sttStart: (lang: string, idleSecs: number) => invoke<void>('stt_start', { lang, idleSecs }),
+  sttDevices: () => invoke<InputDevice[]>('stt_devices'),
+  /**
+   * Transcript arrives as `stt://partial`/`stt://final` events, the text to send as `stt://send`.
+   * `continuous`: keep listening after each send. Resolves to a hint if `device` was not found (default used).
+   */
+  sttStart: (lang: string, idleSecs: number, device: string | null, continuous: boolean) =>
+    invoke<string | null>('stt_start', { lang, idleSecs, device, continuous }),
+  /** While muted, speech input ignores the microphone. */
+  sttMute: (muted: boolean) => invoke<void>('stt_mute', { muted }),
   sttStop: () => invoke<void>('stt_stop'),
+
 }
 
 export function errText(e: unknown): string {

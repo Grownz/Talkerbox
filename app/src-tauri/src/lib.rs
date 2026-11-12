@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::ipc::{Channel, Response};
@@ -132,6 +133,8 @@ struct AppState {
     cancels: Mutex<HashMap<String, Arc<Notify>>>,
     job: Option<KillJob>,
     stt: Mutex<Option<stt::Listener>>,
+    /// Set while a reply is read aloud: speech input drops the audio (kept across listeners).
+    stt_muted: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -971,26 +974,60 @@ async fn stt_download(app: AppHandle, state: State<'_, AppState>, id: String, la
     r.map(|_| false)
 }
 
-/// Starts listening (stops a previous listener first). Errors: runtime or model missing, no microphone, access denied.
+#[derive(Serialize)]
+struct InputDevice {
+    name: String,
+    default: bool,
+}
+
+/// Microphones for the device menu; the system default is marked.
 #[tauri::command]
-async fn stt_start(app: AppHandle, state: State<'_, AppState>, lang: String, idle_secs: u32) -> Res<()> {
+async fn stt_devices() -> Res<Vec<InputDevice>> {
+    let list = tauri::async_runtime::spawn_blocking(stt::input_devices).await.map_err(|e| e.to_string())??;
+    Ok(list.into_iter().map(|(name, default)| InputDevice { name, default }).collect())
+}
+
+/// Starts listening (stops a previous listener first). Errors: runtime or model missing, no microphone, access denied.
+/// `device`: microphone name, None = system default. Returns a hint when that device was not found.
+/// `continuous`: keep listening after each send.
+#[tauri::command]
+async fn stt_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    lang: String,
+    idle_secs: u32,
+    device: Option<String>,
+    continuous: bool,
+) -> Res<Option<String>> {
     let dir = stt_dir(&app)?.join(stt::model_name(&lang)?);
     if !stt::installed(&dir) {
         return Err("The speech input model for this language is not installed; download it on the Speech page".into());
     }
     let old = state.stt.lock().unwrap().take();
-    let idle = Duration::from_secs(u64::from(idle_secs.clamp(1, 60)));
+    let opts = stt::Options {
+        model_dir: dir,
+        idle: Duration::from_secs(u64::from(idle_secs.clamp(1, 60))),
+        continuous,
+        device,
+        muted: state.stt_muted.clone(),
+    };
     let a = app.clone();
-    let l = tauri::async_runtime::spawn_blocking(move || {
+    let (l, hint) = tauri::async_runtime::spawn_blocking(move || {
         if let Some(o) = old {
             o.stop();
         }
-        stt::start(a, dir, idle)
+        stt::start(a, opts)
     })
     .await
     .map_err(|e| e.to_string())??;
     *state.stt.lock().unwrap() = Some(l);
-    Ok(())
+    Ok(hint)
+}
+
+/// While muted, speech input ignores the microphone (set while a reply is read aloud).
+#[tauri::command]
+fn stt_mute(state: State<'_, AppState>, muted: bool) {
+    state.stt_muted.store(muted, Ordering::Relaxed);
 }
 
 #[tauri::command]
@@ -1020,6 +1057,7 @@ pub fn run() {
             cancels: Mutex::default(),
             job: KillJob::new(),
             stt: Mutex::new(None),
+            stt_muted: Arc::default(),
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -1056,8 +1094,11 @@ pub fn run() {
             tts_synthesize,
             stt_status,
             stt_download,
+            stt_devices,
             stt_start,
+            stt_mute,
             stt_stop,
+
         ])
         .build(tauri::generate_context!())
         .expect("error while building Talkerbox");

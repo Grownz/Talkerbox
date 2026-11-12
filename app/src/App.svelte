@@ -7,6 +7,7 @@
   import Icon, { type IconName } from './lib/Icon.svelte'
   import Models from './lib/Models.svelte'
   import OllamaPathDialog from './lib/OllamaPathDialog.svelte'
+  import { nextDelayMs, passMs } from './lib/statusAnim'
   import Terminal from './lib/Terminal.svelte'
   import ThemeSwitch from './lib/ThemeSwitch.svelte'
 
@@ -46,6 +47,29 @@
     return { state: 'missing', text: 'Not found' }
   })
 
+  // Decorative status animation over the sidebar LED while the server runs (10 px glyph across the 12 px LED).
+  const PASS_MS = passMs(22)
+  const ollamaRunning = $derived(!!status?.running)
+  let passing = $state(false)
+  $effect(() => {
+    if (!ollamaRunning || matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    let t: ReturnType<typeof setTimeout>
+    const schedule = () => {
+      t = setTimeout(() => {
+        passing = true
+        t = setTimeout(() => {
+          passing = false
+          schedule()
+        }, PASS_MS)
+      }, nextDelayMs())
+    }
+    schedule()
+    return () => {
+      clearTimeout(t)
+      passing = false
+    }
+  })
+
   let error = $state('')
   // Bumped when models change so the chat view reloads its model list.
   let modelsVersion = $state(0)
@@ -76,7 +100,10 @@
     ;(async () => {
       settings = await api.getSettings()
       await refresh()
-      if (status && !status.running && !status.exe) showPathDialog = true
+      if (status && !status.running) {
+        if (!status.exe) showPathDialog = true
+        else if (settings.ollamaAutostart) run('start')
+      }
     })()
     const timer = setInterval(refresh, 5000)
     return () => clearInterval(timer)
@@ -95,7 +122,7 @@
   const logTitle = 'Show the Ollama server output (read-only log of the server Talkerbox started)'
 </script>
 
-{#snippet ledButton()}
+{#snippet ledButton(rail: boolean)}
   <button
     type="button"
     class="ledbtn"
@@ -105,7 +132,15 @@
     aria-label={`Ollama server: ${led.text}. ${ledAction.label}`}
     onclick={ledAction.run}
   >
-    <span class="led"></span><span class="st-text">{led.text}</span>
+    <span class="led"
+      >{#if rail && passing}<svg class="led-pass" viewBox="0 0 10 10" aria-hidden="true" style="--pass: {PASS_MS}ms"
+          ><path
+            fill="currentColor"
+            fill-rule="evenodd"
+            d="M3 .5c.6 0 .9.8.9 2v.6h2.2v-.6c0-1.2.3-2 .9-2s.9.8.9 2v1.4c.6.5 1 1.3 1 2.3 0 2-1.6 3.3-3.9 3.3S1.1 8.2 1.1 6.2c0-1 .4-1.8 1-2.3V2.5c0-1.2.3-2 .9-2zM3.5 5.6a.5.5 0 1 0 1 0 .5.5 0 1 0-1 0zM5.5 5.6a.5.5 0 1 0 1 0 .5.5 0 1 0-1 0z"
+          /></svg
+        >{/if}</span
+    ><span class="st-text">{led.text}</span>
     {#if status?.running && status.version}<span class="ver">v{status.version}</span>{/if}
   </button>
 {/snippet}
@@ -127,7 +162,7 @@
     <span class="spacer"></span>
     <section class="rail-status" aria-label="Ollama server">
       <span class="cap">Ollama</span>
-      {@render ledButton()}
+      {@render ledButton(true)}
       <div class="acts">
         <Btn icon="terminal" label="Log" title={logTitle} onclick={() => (showTerminal = true)} />
         <Btn icon="folder" label="Path…" title={pathTitle} onclick={() => (showPathDialog = true)} />
@@ -165,7 +200,7 @@
         </header>
         <div class="card">
           <div class="card-h"><h2>Ollama</h2></div>
-          <div class="srv">{@render ledButton()}<span class="help">{ledAction.label}</span></div>
+          <div class="srv">{@render ledButton(false)}<span class="help">{ledAction.label}</span></div>
           <div class="legend" aria-label="Status light legend">
             <span class="lg" data-ollama="stopped"><span class="led"></span>Stopped: click to start</span>
             <span class="lg" data-ollama="busy"><span class="led"></span>Checking, starting or stopping</span>
@@ -173,6 +208,21 @@
             <span class="lg" data-ollama="external"><span class="led"></span>Running externally: cannot stop here</span>
             <span class="lg" data-ollama="missing"><span class="led"></span>Not found: click to set the path</span>
           </div>
+          {#if settings}
+            <button
+              type="button"
+              class="switch"
+              role="switch"
+              aria-checked={settings.ollamaAutostart}
+              aria-label="Start Ollama automatically"
+              title={settings.ollamaAutostart
+                ? 'Talkerbox starts the Ollama server when it opens; click to turn this off'
+                : 'Click to have Talkerbox start the Ollama server when it opens'}
+              onclick={() => settings && (settings.ollamaAutostart = !settings.ollamaAutostart)}
+              ><span class="track"></span><span class="swl">Start Ollama automatically</span></button
+            >
+          {/if}
+
         </div>
         <div class="card">
           <div class="card-h"><h2>Install path</h2></div>

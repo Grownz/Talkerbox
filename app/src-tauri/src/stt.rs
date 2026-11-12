@@ -1,5 +1,5 @@
-//! Speech input: default microphone (cpal) -> mono 16 kHz -> Vosk, with live transcript events and an idle
-//! timer that sends the text once it stops changing. Audio stays in memory: nothing is written or sent anywhere.
+//! Speech input: chosen (or default) microphone (cpal) -> mono 16 kHz -> Vosk, with live transcript events and an
+//! idle timer that sends the text once it stops changing. In continuous mode listening goes on after each send. Audio stays in memory: nothing is written or sent anywhere.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -14,7 +14,8 @@ use tauri::{AppHandle, Emitter};
 pub const EVENT_PARTIAL: &str = "stt://partial";
 /// Full transcript after a segment was finalised.
 pub const EVENT_FINAL: &str = "stt://final";
-/// Idle timeout reached: the full transcript to send. Listening has stopped.
+/// Idle timeout (or, in continuous mode, the word limit) reached: the full transcript to send.
+/// Listening has stopped, except in continuous mode, where it goes on with a fresh transcript.
 pub const EVENT_SEND: &str = "stt://send";
 /// Runtime failure (e.g. microphone unplugged). Listening has stopped.
 pub const EVENT_ERROR: &str = "stt://error";
@@ -26,6 +27,8 @@ const CHUNK: usize = 1_600;
 pub const MAX_ZIP_BYTES: u64 = 150 * 1024 * 1024;
 const MAX_UNPACKED_BYTES: u64 = 500 * 1024 * 1024;
 const MAX_ENTRIES: usize = 10_000;
+/// Continuous mode sends a long transcript early at the next sentence end once it has this many words.
+pub const WORD_LIMIT: usize = 100;
 
 /// (language, model folder name)
 pub const MODELS: [(&str, &str); 2] = [("de", "vosk-model-small-de-0.15"), ("en", "vosk-model-small-en-us-0.15")];
@@ -158,6 +161,12 @@ impl Idle {
     }
 }
 
+/// Continuous mode: a long transcript is sent before the idle timeout once it reaches a sentence end.
+/// Vosk small models emit no punctuation, so the end of a recognised utterance (`segment_end`) counts too.
+pub fn long_enough(text: &str, segment_end: bool) -> bool {
+    text.split_whitespace().count() >= WORD_LIMIT && (segment_end || text.trim_end().ends_with(['.', '!', '?', '。', '！', '？', '…']))
+}
+
 fn join(parts: &[String], partial: &str) -> String {
     parts.iter().map(String::as_str).chain(Some(partial)).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ")
 }
@@ -184,9 +193,21 @@ impl Listener {
     }
 }
 
-/// Loads the model, opens the default microphone and starts listening. Returns once listening has started
+pub struct Options {
+    pub model_dir: PathBuf,
+    pub idle: Duration,
+    /// Keep listening after each send.
+    pub continuous: bool,
+    /// Input device name; None or a missing device = system default.
+    pub device: Option<String>,
+    /// While set, captured audio is dropped (replies being read aloud must not be recognised).
+    pub muted: Arc<AtomicBool>,
+}
+
+/// Loads the model, opens the microphone and starts listening. Returns once listening has started
 /// or failed, so setup errors (missing model, no microphone, access denied) come back as `Err`.
-pub fn start(app: AppHandle, model_dir: PathBuf, idle: Duration) -> Result<Listener, String> {
+/// The `Some` string is a hint that the saved device was not found and the default one is used.
+pub fn start(app: AppHandle, opts: Options) -> Result<(Listener, Option<String>), String> {
     if let Some(e) = runtime_error() {
         return Err(e);
     }
@@ -195,10 +216,10 @@ pub fn start(app: AppHandle, model_dir: PathBuf, idle: Duration) -> Result<Liste
     let flag = stop.clone();
     let thread = std::thread::Builder::new()
         .name("stt".into())
-        .spawn(move || run(app, model_dir, idle, flag, ready_tx))
+        .spawn(move || run(app, opts, flag, ready_tx))
         .map_err(|e| format!("Cannot start speech input: {e}"))?;
     match ready_rx.recv() {
-        Ok(Ok(())) => Ok(Listener { stop, thread: Some(thread) }),
+        Ok(Ok(hint)) => Ok((Listener { stop, thread: Some(thread) }, hint)),
         Ok(Err(e)) => {
             let _ = thread.join();
             Err(e)
@@ -209,9 +230,9 @@ pub fn start(app: AppHandle, model_dir: PathBuf, idle: Duration) -> Result<Liste
 
 type Audio = Result<Vec<i16>, String>;
 
-fn run(app: AppHandle, model_dir: PathBuf, idle: Duration, stop: Arc<AtomicBool>, ready: SyncSender<Result<(), String>>) {
+fn run(app: AppHandle, opts: Options, stop: Arc<AtomicBool>, ready: SyncSender<Result<Option<String>, String>>) {
     vosk::set_log_level(vosk::LogLevel::Error);
-    let Some(model) = vosk::Model::new(model_dir.to_string_lossy()) else {
+    let Some(model) = vosk::Model::new(opts.model_dir.to_string_lossy()) else {
         let _ = ready.send(Err("Could not load the speech input model; download it again on the Speech page".into()));
         return;
     };
@@ -220,15 +241,15 @@ fn run(app: AppHandle, model_dir: PathBuf, idle: Duration, stop: Arc<AtomicBool>
         return;
     };
     let (tx, rx) = sync_channel::<Audio>(64);
-    let stream = match open_mic(tx) {
+    let (stream, hint) = match open_mic(tx, opts.device.as_deref()) {
         Ok(s) => s,
         Err(e) => {
             let _ = ready.send(Err(e));
             return;
         }
     };
-    let _ = ready.send(Ok(()));
-    if let Err(e) = listen(&app, &mut rec, &rx, idle, &stop) {
+    let _ = ready.send(Ok(hint));
+    if let Err(e) = listen(&app, &mut rec, &rx, &opts, &stop) {
         let _ = app.emit(EVENT_ERROR, e);
     }
     drop(stream);
@@ -241,15 +262,16 @@ fn text_of(r: vosk::CompleteResult) -> String {
     }
 }
 
-fn listen(app: &AppHandle, rec: &mut vosk::Recognizer, rx: &Receiver<Audio>, idle: Duration, stop: &AtomicBool) -> Result<(), String> {
+fn listen(app: &AppHandle, rec: &mut vosk::Recognizer, rx: &Receiver<Audio>, opts: &Options, stop: &AtomicBool) -> Result<(), String> {
     let mut finals: Vec<String> = Vec::new();
     let mut partial = String::new();
     let mut shown = String::new();
-    let mut timer = Idle::new(idle, Instant::now());
+    let mut timer = Idle::new(opts.idle, Instant::now());
     let mut buf: Vec<i16> = Vec::with_capacity(CHUNK * 4);
     while !stop.load(Ordering::Relaxed) {
         match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(Ok(s)) => buf.extend_from_slice(&s),
+            Ok(Ok(s)) if !opts.muted.load(Ordering::Relaxed) => buf.extend_from_slice(&s),
+            Ok(Ok(_)) => buf.clear(),
             Ok(Err(e)) => return Err(e),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("The microphone stopped delivering audio".into()),
@@ -275,11 +297,20 @@ fn listen(app: &AppHandle, rec: &mut vosk::Recognizer, rx: &Receiver<Audio>, idl
             let _ = app.emit(EVENT_PARTIAL, &text);
             shown = text.clone();
         }
-        if timer.tick(&text, Instant::now()) {
+        let now = Instant::now();
+        // `|`, not `||`: the idle timer must see every transcript change.
+        if timer.tick(&text, now) | (opts.continuous && long_enough(&text, partial.is_empty())) {
             // The final pass may correct the last partial.
             let tail = text_of(rec.final_result());
             let _ = app.emit(EVENT_SEND, join(&finals, if tail.is_empty() { &partial } else { &tail }));
-            return Ok(());
+            if !opts.continuous {
+                return Ok(());
+            }
+            rec.reset();
+            finals.clear();
+            partial.clear();
+            shown.clear();
+            timer = Idle::new(opts.idle, now);
         }
     }
     Ok(())
@@ -296,11 +327,31 @@ fn mic_err(e: cpal::Error) -> String {
     }
 }
 
-fn open_mic(tx: SyncSender<Audio>) -> Result<cpal::Stream, String> {
+fn device_name(dev: &cpal::Device) -> Option<String> {
+    use cpal::traits::DeviceTrait;
+    dev.description().ok().map(|d| d.name().to_string())
+}
+
+/// Input devices for the device menu: (name, is the system default).
+pub fn input_devices() -> Result<Vec<(String, bool)>, String> {
+    use cpal::traits::HostTrait;
+    let host = cpal::default_host();
+    let default = host.default_input_device().as_ref().and_then(device_name);
+    let devs = host.input_devices().map_err(mic_err)?;
+    Ok(devs.filter_map(|d| device_name(&d)).map(|n| (n.clone(), Some(&n) == default.as_ref())).collect())
+}
+
+fn open_mic(tx: SyncSender<Audio>, wanted: Option<&str>) -> Result<(cpal::Stream, Option<String>), String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::SampleFormat as F;
-    let dev = cpal::default_host()
-        .default_input_device()
+    let host = cpal::default_host();
+    let chosen = wanted.and_then(|w| host.input_devices().ok()?.find(|d| device_name(d).as_deref() == Some(w)));
+    let hint = match (wanted, &chosen) {
+        (Some(w), None) => Some(format!("Microphone \"{w}\" was not found; using the default recording device.")),
+        _ => None,
+    };
+    let dev = chosen
+        .or_else(|| host.default_input_device())
         .ok_or("No microphone found. Connect one or choose a default recording device in the Windows sound settings.")?;
     let sup = dev.default_input_config().map_err(mic_err)?;
     let cfg = sup.config();
@@ -313,7 +364,7 @@ fn open_mic(tx: SyncSender<Audio>) -> Result<cpal::Stream, String> {
     }
     .map_err(mic_err)?;
     stream.play().map_err(mic_err)?;
-    Ok(stream)
+    Ok((stream, hint))
 }
 
 fn build<T: cpal::SizedSample + Send + 'static>(
@@ -397,7 +448,20 @@ mod tests {
     }
 
     #[test]
+    fn long_transcript_waits_for_a_sentence_end() {
+        let words = |n: usize| vec!["word"; n].join(" ");
+        assert!(!long_enough(&format!("{}.", words(99)), true), "below the limit never sends early");
+        assert!(!long_enough(&words(100), false), "mid-utterance without punctuation");
+        assert!(long_enough(&words(100), true), "Vosk closed the utterance");
+        assert!(long_enough(&format!("{}.", words(120)), false));
+        assert!(long_enough(&format!("{}? ", words(100)), false));
+        assert!(long_enough(&format!("{}。", words(100)), false));
+        assert!(!long_enough(&format!("{},", words(150)), false));
+    }
+
+    #[test]
     fn join_skips_empty_parts() {
+
         assert_eq!(join(&["a b".into(), "c".into()], ""), "a b c");
         assert_eq!(join(&[], "x"), "x");
         assert_eq!(join(&[], ""), "");

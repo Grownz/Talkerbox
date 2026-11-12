@@ -18,6 +18,9 @@ export class Speaker {
   onError: (msg: string) => void = () => {}
   /** The sidecar reported (X-TTS-Fallback) that it used the base model for this voice. */
   onFallback: (voice: string) => void = () => {}
+  /** Called when speech starts (sentences queued, synthesising or playing) and when it is over. */
+  onSpeaking: (on: boolean) => void = () => {}
+  private speaking = false
 
   private ctx: AudioContext | null = null
   private text = new SpeechText()
@@ -50,12 +53,19 @@ export class Speaker {
     for (const s of this.sources) s.stop()
     this.sources.clear()
     this.nextStart = 0
+    this.update()
+  }
+
+  private update() {
+    const on = this.working || this.queue.length > 0 || this.sources.size > 0
+    if (on !== this.speaking) this.onSpeaking((this.speaking = on))
   }
 
   private enqueue(raw: string) {
     const text = speakable(raw)
     if (!/[\p{L}\p{N}]/u.test(text)) return
     this.queue.push(...chunkLong(text))
+    this.update()
     void this.run()
   }
 
@@ -82,6 +92,7 @@ export class Speaker {
     } finally {
       this.working = false
       if (this.queue.length) void this.run()
+      else this.update()
     }
   }
 
@@ -94,6 +105,10 @@ export class Speaker {
     src.start(at)
     this.nextStart = at + buf.duration
     this.sources.add(src)
-    src.onended = () => this.sources.delete(src)
+    src.onended = () => {
+      this.sources.delete(src)
+      this.update()
+    }
+
   }
 }

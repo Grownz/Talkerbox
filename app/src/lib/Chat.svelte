@@ -15,6 +15,7 @@
   import { finalRate, formatRate, liveRate } from './rate'
   import { Speaker } from './speaker'
   import Btn from './Btn.svelte'
+  import DeviceMenu from './DeviceMenu.svelte'
   import { fit } from './fit'
   import Icon from './Icon.svelte'
   import VoicePicker from './VoicePicker.svelte'
@@ -40,6 +41,8 @@
   const speaker = new Speaker()
   speaker.onError = (m) => (error = m)
   speaker.onFallback = (v) => (fallbackSeenFor = v)
+  // The microphone must not recognise the reply being read aloud: speech input drops audio meanwhile.
+  speaker.onSpeaking = (on) => void api.sttMute(on).catch(() => {})
 
   // One persistent hint for the selected voice instead of a message per sentence.
   const usingFallback = $derived(
@@ -131,6 +134,8 @@
   }
 
   onMount(() => {
+    // A stale mute (e.g. after a webview reload mid-speech) must not keep the microphone deaf.
+    api.sttMute(false).catch(() => {})
     ;(async () => {
       tts = await api.ttsStatus().catch(() => null)
       if (tts?.running) await loadVoices()
@@ -145,12 +150,23 @@
       listen<string>('stt://final', draft),
       listen<string>('stt://send', (e) => {
         if (!listening) return
-        draft(e)
-        listening = false
-        send()
+        if (!continuous) {
+          draft(e)
+          listening = false
+          send()
+          return
+        }
+        // Continuous: listening goes on with a fresh transcript; a reply in progress queues the text.
+        const text = joinDraft(sttBase, e.payload)
+        sttBase = ''
+        input = ''
+        if (!text) return
+        if (opId) queued = joinDraft(queued, text)
+        else send(text)
       }),
       listen<string>('stt://error', (e) => {
         listening = false
+        continuous = false
         error = e.payload
       }),
     ]
@@ -166,10 +182,22 @@
   let sttStarting = $state(false)
   // Composer text from before listening started; the transcript is appended to it.
   let sttBase = ''
+  // Continuous mode (mic button held 5 s): every send keeps listening, until the mic button is pressed again.
+  let continuous = $state(false)
+  // Dictated text that came in while a reply was still generating; sent when it is done.
+  let queued = $state('')
+  let notice = $state('')
+  let micMenu = $state(false)
+  let micWrap: HTMLElement | undefined = $state()
 
   async function toggleMic() {
     if (listening) return stopListening()
+    return startListening(false)
+  }
+
+  async function startListening(cont: boolean) {
     error = ''
+    notice = ''
     const st = await api.sttStatus().catch((e) => ((error = errText(e)), null))
     if (!st) return
     if (st.runtimeError) {
@@ -186,10 +214,12 @@
     sttBase = input
     sttStarting = true
     listening = true
+    continuous = cont
     try {
-      await api.sttStart(lang, settings.sttIdleSecs)
+      notice = (await api.sttStart(lang, settings.sttIdleSecs, settings.sttDevice, cont)) ?? ''
     } catch (e) {
       listening = false
+      continuous = false
       error = errText(e)
     } finally {
       sttStarting = false
@@ -199,12 +229,82 @@
   /** Stops listening; the dictated text stays in the box for editing. */
   function stopListening() {
     listening = false
+    continuous = false
     api.sttStop().catch(() => {})
   }
 
   function discardDictation() {
     stopListening()
     input = sttBase
+    queued = ''
+  }
+
+  // ---------- hold the mic button for continuous listening ----------
+  const HOLD_MS = 5000
+  let holding = $state(false)
+  let holdTimer: ReturnType<typeof setTimeout> | undefined
+  // The hold completed: swallow the click that follows the release.
+  let holdDone = false
+  // Enter/Space is down on the mic button (auto-repeat must not reach the window Enter handler).
+  let keyDown = false
+
+  function holdStart() {
+    holdDone = false
+    if (listening || sttStarting) return
+    holding = true
+    holdTimer = setTimeout(() => {
+      holding = false
+      holdDone = true
+      startListening(true)
+    }, HOLD_MS)
+  }
+
+  /** Released or left early; returns true if a hold was cancelled (a short press). */
+  function holdCancel(): boolean {
+    clearTimeout(holdTimer)
+    const was = holding
+    holding = false
+    return was
+  }
+
+  function onMicClick() {
+    if (holdDone) {
+      holdDone = false
+      return
+    }
+    toggleMic()
+  }
+
+  function onMicPointerDown(e: PointerEvent) {
+    if (e.button === 0) holdStart()
+  }
+
+  // Enter would click on keydown (and repeat): handle Enter and Space by hand so a hold never also toggles.
+  function onMicKeyDown(e: KeyboardEvent) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      if (listening && !keyDown) return // Enter while listening keeps its window-wide meaning (send now).
+      e.preventDefault()
+      e.stopPropagation()
+      if (!keyDown && !e.repeat) {
+        keyDown = true
+        holdStart()
+      }
+    }
+  }
+
+  function onMicKeyUp(e: KeyboardEvent) {
+    if ((e.key === 'Enter' || e.key === ' ') && keyDown) {
+      e.preventDefault()
+      keyDown = false
+      if (holdCancel()) toggleMic()
+      holdDone = false
+    }
+  }
+
+  function onMicContextMenu(e: MouseEvent) {
+    e.preventDefault()
+    holdCancel()
+    micMenu = true
   }
 
   function onSendClick() {
@@ -212,11 +312,12 @@
     send()
   }
 
-  async function send() {
-    const text = input.trim()
+  /** Sends `given` (dictated in continuous mode) or the composer text. */
+  async function send(given?: string) {
+    const text = (given ?? input).trim()
     const model = settings.lastModel
     if (!text || !model || opId) return
-    input = ''
+    if (given === undefined) input = ''
     error = ''
     messages.push({ role: 'user', content: text })
     const history: ChatMessage[] = messages.map(({ role, content }) => ({ role, content }))
@@ -246,6 +347,11 @@
     } finally {
       clearInterval(timer)
       opId = null
+    }
+    if (queued) {
+      const next = queued
+      queued = ''
+      send(next)
     }
   }
 
@@ -317,9 +423,10 @@
   </div>
 </header>
 
-{#if error || (settings.ttsEnabled && tts?.running && usingFallback)}
+{#if error || notice || (settings.ttsEnabled && tts?.running && usingFallback)}
   <div class="banners">
     {#if error}<div class="banner err" role="alert"><Icon name="alert" /><div class="body">{error}</div></div>{/if}
+    {#if notice}<div class="banner warn" role="status"><Icon name="alert" /><div class="body">{notice}</div></div>{/if}
     {#if settings.ttsEnabled && tts?.running && usingFallback}
       <div class="banner warn" role="status">
         <Icon name="alert" />
@@ -377,11 +484,19 @@
 </div>
 
 <footer class="composer">
-  {#if listening}
-    <div class="stt-status" role="status">
-      <Icon name="mic" />{sttStarting ? 'Starting the microphone…' : `Listening (${sttLanguageName(settings.sttLanguage)}): sends after ${settings.sttIdleSecs} s without new words`}
-    </div>
-  {/if}
+  <!-- Always present so screen readers announce the hold progress and mode changes. -->
+  <div class="stt-status" role="status" hidden={!listening && !holding}>
+    {#if holding}
+      <Icon name="mic" />Hold to keep listening… (5 s)
+    {:else if listening}
+      <Icon name="mic" />{sttStarting
+        ? 'Starting the microphone…'
+        : continuous
+          ? `Continuous listening (${sttLanguageName(settings.sttLanguage)}): sends after ${settings.sttIdleSecs} s without new words or at a sentence end after about 100 words, then keeps listening`
+          : `Listening (${sttLanguageName(settings.sttLanguage)}): sends after ${settings.sttIdleSecs} s without new words`}
+      {#if queued}<span class="queued">· text queued until the reply is done</span>{/if}
+    {/if}
+  </div>
   <div class="comp-box" class:listening>
     <textarea
       title={listening ? 'Dictated text (in progress); stop listening to edit it' : running ? 'Your message; Enter sends it, Shift+Enter adds a new line' : 'Start Ollama to chat'}
@@ -396,15 +511,41 @@
     {#if listening}
       <Btn icon="x" label="Discard" class="ghost" title="Stop listening and discard the dictated text" onclick={discardDictation} disabled={sttStarting} />
     {/if}
-    <Btn
-      icon="mic"
-      label={listening ? 'Stop' : 'Speak'}
-      class="mic {listening ? 'on' : 'ghost'}"
-      aria-pressed={listening}
-      title={sttStarting ? 'The microphone is starting' : listening ? 'Stop listening; the dictated text stays in the box for editing' : `Dictate a message (${sttLanguageName(settings.sttLanguage)}); it is sent after ${settings.sttIdleSecs} s without new words`}
-      onclick={toggleMic}
-      disabled={sttStarting}
-    />
+    <span class="mic-wrap" class:holding bind:this={micWrap}>
+      <Btn
+        icon="mic"
+        label={listening ? 'Stop' : 'Speak'}
+        class="mic {listening ? 'on' : 'ghost'} {continuous ? 'locked' : ''}"
+        aria-pressed={listening}
+        aria-haspopup="menu"
+        aria-expanded={micMenu}
+        title={sttStarting
+          ? 'The microphone is starting'
+          : continuous
+            ? 'Continuous listening is on: each pause sends the text and listening goes on. Click to stop'
+            : listening
+              ? 'Stop listening; the dictated text stays in the box for editing'
+              : `Dictate a message (${sttLanguageName(settings.sttLanguage)}); it is sent after ${settings.sttIdleSecs} s without new words. Hold 5 s to keep listening after each send. Right-click (or Shift+F10) to choose the microphone`}
+        onclick={onMicClick}
+        onpointerdown={onMicPointerDown}
+        onpointerup={holdCancel}
+        onpointerleave={holdCancel}
+        onpointercancel={holdCancel}
+        onkeydown={onMicKeyDown}
+        onkeyup={onMicKeyUp}
+        onblur={() => ((keyDown = false), holdCancel())}
+        oncontextmenu={onMicContextMenu}
+        disabled={sttStarting}
+      />
+      {#if holding}
+        <svg class="hold-ring" aria-hidden="true" style="--hold: {HOLD_MS}ms"><rect pathLength="100" /></svg>
+      {/if}
+      {#if continuous}<span class="lock-badge" aria-hidden="true">∞</span>{/if}
+    </span>
+    {#if micMenu && micWrap}
+      <DeviceMenu anchor={micWrap.querySelector('button') ?? micWrap} bind:value={settings.sttDevice} {listening} onClose={() => (micMenu = false)} />
+    {/if}
+
     {#if opId}
       <Btn icon="stop" label="Stop" class="danger" title="Stop generating; the text so far is kept" onclick={stop} />
     {:else}

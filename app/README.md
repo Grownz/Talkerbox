@@ -13,6 +13,9 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   that Talkerbox started can be stopped. When the window closes, that server is killed together with its runner
   processes. Spawned processes are also placed in a Windows job object with kill-on-close, so they die even if
   Talkerbox crashes or is killed.
+- **Auto-start**: when the app opens and Ollama was found but is not running, Talkerbox starts `ollama serve` right
+  away (once; a failure shows the usual error banner). If Ollama is not found, the path dialog opens instead. The
+  "Start Ollama automatically" switch on the Server page turns this off (setting `ollamaAutostart`, default on).
 - **Layout**: a left sidebar with Chat, Models, Speech and Server pages and the Ollama status at the bottom. Below
   1024 px window width it collapses to a 64 px icon rail. Toolbar buttons shorten their labels, then become icons
   (tooltip and accessible name stay) when space runs out; text inputs shrink first. The window cannot be made smaller
@@ -89,7 +92,7 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   language mapping lives in `src/lib/voices.ts` (Kokoro prefix letters a/b/e/f/h/i/j/p/z per Kokoro-82M VOICES.md).
   Unknown prefixes get a globe.
 - **Speech input** (`src-tauri/src/stt.rs`, offline, in-process): the microphone button in the composer starts and
-  stops listening (red while listening). Audio from the default recording device is captured with `cpal`, downmixed
+  stops listening (red while listening). Audio from the chosen recording device is captured with `cpal`, downmixed
   to mono, resampled to 16 kHz (box-filter averaging) and fed to Vosk in 100 ms chunks on its own thread, off the
   async runtime. The live transcript fills the composer (italic, read-only, red frame) through `stt://partial` and
   `stt://final` events; text typed before stays in front of it. When the transcript is non-empty and has not changed
@@ -99,25 +102,42 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   playback so the microphone does not hear the reply; listening while a reply is generated is allowed (the text then
   waits in the composer). Errors (no microphone, access blocked by Windows privacy settings, device unplugged) are
   shown in the chat (`stt://error`). Audio is never written to disk or sent anywhere. Listening stops on app exit.
+  - **Microphone menu**: right-click the mic button (or focus it and press Shift+F10 or the Menu key) to pick the
+    input device from the list `cpal` reports (`stt_devices`; the Windows default is marked). The name is saved as
+    `sttDevice`; "Windows default" clears it. If the saved device is missing, the default device is used and a hint
+    is shown. A choice made while listening applies from the next listening session.
+  - **Continuous listening**: hold the mic button (mouse, or Space/Enter while it has focus) for 5 s. A line runs
+    around the button border meanwhile, and the status line says "Hold to keep listening" for screen readers; a
+    shorter press is a normal click. Then the button turns blue with an infinity badge and listening goes on after
+    every send: Rust sends on the usual idle timeout, or earlier once the transcript has 100 words and reaches a
+    sentence end (`.!?` or `。！？`, or the end of a Vosk utterance, since the small models emit no punctuation;
+    `stt::long_enough`, tested), then resets the recognizer and starts a fresh transcript. Text that arrives while a
+    reply is still generating is queued and sent when it is done. Pressing the mic button again stops.
+  - **No self-listening**: while a reply is read aloud (sentences queued, synthesising or playing), speech input
+    drops the microphone audio (`stt_mute`) and resumes when speech is over.
   The Speech page's "Speech input" section picks the language (`sttLanguage`: German or English) and downloads the
   Vosk small models on demand from alphacephei.com (`vosk-model-small-de-0.15`, `vosk-model-small-en-us-0.15`, about
   45 MB each). The zip is downloaded with resume (max 150 MB), unpacked to a temp folder (entries escaping it are
   rejected, max 500 MB unpacked), checked for `am/final.mdl` and moved to `stt\<model>`. If the model for the chosen
   language is missing, the mic button shows a hint instead of starting.
 - **Settings** (`settings.json` in the app config dir, `%APPDATA%\com.talkerbox.app`): Ollama path, last model, voice,
-  TTS on/off and speed, speech input language and idle time.
+  TTS on/off and speed, speech input language, idle time and microphone, Ollama auto-start.
 
 Downloads, logs and models are stored in the local app data dir (`%LOCALAPPDATA%\com.talkerbox.app`): `gguf\` (temporary),
 `tts\`, `stt\` and `logs\sidecar.log`. Ollama's output is not written to disk: it is kept in memory for the terminal view.
 
 ## Prerequisites
 
-- Node.js 20+ and npm
+- Node.js 22.18+ and npm (the tests use Node's built-in TypeScript type stripping)
 - Rust (stable, `x86_64-pc-windows-msvc`) and the MSVC C++ Build Tools
+- Python 3.10+ with the `py` launcher, for the TTS sidecar and the Vosk runtime setup
 - WebView2 (preinstalled on Windows 11)
 - Ollama installed separately (needed only at runtime)
 
 ## Development
+
+Once, before the first build: build the TTS sidecar and set up the Vosk runtime (see the top-level README, "Build
+and run", and the sections below).
 
 ```powershell
 cd app
@@ -129,9 +149,10 @@ Checks:
 
 ```powershell
 npm run check                          # svelte-check + tsc
-npm test                               # frontend unit tests (node --test, voice/flag mapping)
+npm test                               # frontend unit tests (node --test: rates, sentences, voices, speech input, ...)
 npm run build                          # frontend production build
-cd src-tauri; cargo test; cargo clippy # Rust unit tests (HF links, Ollama path order, file names, speech input)
+cd src-tauri; cargo test; cargo clippy --all-targets # Rust unit tests (HF links, Ollama path order, speech input, ...)
+
 ```
 
 ## Release build

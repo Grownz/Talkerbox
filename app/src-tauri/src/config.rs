@@ -22,6 +22,10 @@ pub struct Settings {
     pub stt_language: String,
     /// Seconds without transcript change before speech input sends the text.
     pub stt_idle_secs: u32,
+    /// Speech input microphone by name; None = system default.
+    pub stt_device: Option<String>,
+    /// Start `ollama serve` when the app opens.
+    pub ollama_autostart: bool,
 }
 
 impl Default for Settings {
@@ -36,6 +40,9 @@ impl Default for Settings {
             display_names: HashMap::new(),
             stt_language: "en".into(),
             stt_idle_secs: 5,
+            stt_device: None,
+            ollama_autostart: true,
+
         }
     }
 }
