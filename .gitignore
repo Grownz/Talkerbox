@@ -26,3 +26,7 @@ Thumbs.db
 
 # Built sidecar binary (build via tts-sidecar/build.ps1)
 app/src-tauri/binaries/*.exe
+
+# Vosk runtime DLLs (copy via app/src-tauri/vosk/setup.ps1)
+app/src-tauri/vosk/*.dll
+app/src-tauri/vosk/*.lib

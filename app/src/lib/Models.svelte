@@ -9,12 +9,15 @@
     type LinkInfo,
     type ModelInfo,
     type Pack,
+    type Settings,
+    type SttStatus,
     type TtsFile,
     type TtsStatus,
   } from './api'
   import { FLAGS } from './flags'
   import PackDialog from './PackDialog.svelte'
   import { languageInfo } from './voices'
+  import { STT_LANGUAGES, sttLanguageName } from './stt'
   import { Job } from './job.svelte'
   import JobStatus from './JobStatus.svelte'
   import Btn from './Btn.svelte'
@@ -26,7 +29,23 @@
     view,
     running,
     onModelsChanged,
-  }: { view: 'models' | 'speech'; running: boolean; onModelsChanged: () => void } = $props()
+    settings = $bindable(),
+  }: { view: 'models' | 'speech'; running: boolean; onModelsChanged: () => void; settings: Settings } = $props()
+
+  // Speech input (Vosk models, downloaded on demand)
+  let stt = $state<SttStatus | null>(null)
+  const sttJob = new Job()
+  let sttJobLang = $state('')
+  const loadStt = async () => (stt = await api.sttStatus().catch(() => stt))
+  $effect(() => {
+    loadStt()
+  })
+
+  async function downloadStt(lang: string) {
+    sttJobLang = lang
+    await sttJob.run((id, p) => api.sttDownload(id, lang, p), `${sttLanguageName(lang)} speech input model installed.`)
+    await loadStt()
+  }
 
   let models = $state<ModelInfo[]>([])
   let listError = $state('')
@@ -363,6 +382,58 @@
       {/if}
     {/if}
     <JobStatus job={ttsJob} text={progressText(ttsJob.progress)} />
+  </div>
+
+  <div class="card">
+    <div class="card-h">
+      <h2>Speech input (Vosk)</h2>
+      {#if stt}
+        {@const ready = stt.models.some((m) => m.lang === settings.sttLanguage && m.installed)}
+        <span class="badge" class:ok={ready}><span class="dot"></span>{ready ? 'Ready' : 'Model missing'}</span>
+      {/if}
+    </div>
+    <p class="help">
+      Dictate messages with the microphone button in the chat. Recognition runs offline: audio stays in memory, is never
+      saved and never leaves this computer. Each language model is downloaded once from alphacephei.com.
+    </p>
+    {#if stt?.runtimeError}
+      <div class="banner err" role="alert"><Icon name="alert" /><div class="body">{stt.runtimeError}</div></div>
+    {/if}
+    <div class="row stt-opts">
+      <label class="field">
+        <span class="label">Language</span>
+        <span class="select-wrap">
+          <select bind:value={settings.sttLanguage} title="Language you will speak; each language needs its own model">
+            {#each STT_LANGUAGES as l (l.code)}<option value={l.code}>{l.name}</option>{/each}
+          </select><Icon name="chev-down" />
+        </span>
+      </label>
+      <label class="field">
+        <span class="label">Send after silence</span>
+        <span class="select-wrap">
+          <select bind:value={settings.sttIdleSecs} title="Dictated text is sent once no new words were recognised for this long">
+            {#each [2, 3, 4, 5, 7, 10, 15, 20, 30] as s (s)}<option value={s}>{s} s</option>{/each}
+          </select><Icon name="chev-down" />
+        </span>
+      </label>
+    </div>
+    <div class="list">
+      {#each STT_LANGUAGES as l (l.code)}
+        {@const m = stt?.models.find((x) => x.lang === l.code)}
+        <div class="item">
+          <span class="ic"><Icon name="mic" /></span>
+          <span class="txt"><span class="n">{l.name}</span><span class="s mono">{m?.name ?? ''}</span></span>
+          {#if m?.installed}
+            <span class="badge ok" title="Model installed"><Icon name="check" />Installed</span>
+          {:else if sttJob.busy && sttJobLang === l.code}
+            <Btn icon="x" label="Cancel" title="Stop; the partial download resumes next time" onclick={() => sttJob.cancel()} />
+          {:else}
+            <Btn icon="download" label={`Download (${l.size})`} short="Download" class="primary" title={sttJob.busy ? 'Another speech input download is running' : `Download and unpack the ${l.name} speech input model (${l.size})`} disabled={sttJob.busy} onclick={() => downloadStt(l.code)} />
+          {/if}
+        </div>
+      {/each}
+    </div>
+    <JobStatus job={sttJob} text={progressText(sttJob.progress)} />
   </div>
 
   {#if featured.length}

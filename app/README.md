@@ -88,11 +88,27 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   images, and Windows has no flag emoji. Voice labels look like "Heart (female)", with the raw id as tooltip. The
   language mapping lives in `src/lib/voices.ts` (Kokoro prefix letters a/b/e/f/h/i/j/p/z per Kokoro-82M VOICES.md).
   Unknown prefixes get a globe.
+- **Speech input** (`src-tauri/src/stt.rs`, offline, in-process): the microphone button in the composer starts and
+  stops listening (red while listening). Audio from the default recording device is captured with `cpal`, downmixed
+  to mono, resampled to 16 kHz (box-filter averaging) and fed to Vosk in 100 ms chunks on its own thread, off the
+  async runtime. The live transcript fills the composer (italic, read-only, red frame) through `stt://partial` and
+  `stt://final` events; text typed before stays in front of it. When the transcript is non-empty and has not changed
+  for the "send after silence" time (default 5 s, setting `sttIdleSecs`), Rust emits `stt://send`, stops listening
+  and the text is sent like a typed message. While listening, Send (or Enter) sends at once, Discard drops the
+  dictated text, and the mic button stops and leaves the text for editing. Starting to listen stops any speech
+  playback so the microphone does not hear the reply; listening while a reply is generated is allowed (the text then
+  waits in the composer). Errors (no microphone, access blocked by Windows privacy settings, device unplugged) are
+  shown in the chat (`stt://error`). Audio is never written to disk or sent anywhere. Listening stops on app exit.
+  The Speech page's "Speech input" section picks the language (`sttLanguage`: German or English) and downloads the
+  Vosk small models on demand from alphacephei.com (`vosk-model-small-de-0.15`, `vosk-model-small-en-us-0.15`, about
+  45 MB each). The zip is downloaded with resume (max 150 MB), unpacked to a temp folder (entries escaping it are
+  rejected, max 500 MB unpacked), checked for `am/final.mdl` and moved to `stt\<model>`. If the model for the chosen
+  language is missing, the mic button shows a hint instead of starting.
 - **Settings** (`settings.json` in the app config dir, `%APPDATA%\com.talkerbox.app`): Ollama path, last model, voice,
-  TTS on/off and speed.
+  TTS on/off and speed, speech input language and idle time.
 
-Downloads, logs and TTS models are stored in the local app data dir (`%LOCALAPPDATA%\com.talkerbox.app`): `gguf\` (temporary),
-`tts\` and `logs\sidecar.log`. Ollama's output is not written to disk: it is kept in memory for the terminal view.
+Downloads, logs and models are stored in the local app data dir (`%LOCALAPPDATA%\com.talkerbox.app`): `gguf\` (temporary),
+`tts\`, `stt\` and `logs\sidecar.log`. Ollama's output is not written to disk: it is kept in memory for the terminal view.
 
 ## Prerequisites
 
@@ -115,7 +131,7 @@ Checks:
 npm run check                          # svelte-check + tsc
 npm test                               # frontend unit tests (node --test, voice/flag mapping)
 npm run build                          # frontend production build
-cd src-tauri; cargo test; cargo clippy # Rust unit tests (HF link normalisation, Ollama path order, file names)
+cd src-tauri; cargo test; cargo clippy # Rust unit tests (HF links, Ollama path order, file names, speech input)
 ```
 
 ## Release build
@@ -153,6 +169,33 @@ Kokoro files: **Speech -> Text-to-speech model** shows them as installed once a 
 download buttons are hidden behind "Re-download…", and "Delete files" removes them. You can also choose "Use existing
 folder…" (for example `tts-sidecar\models`). Files in a folder you chose are never deleted by the app.
 
+## Vosk runtime (speech input)
+
+The `vosk` crate links `libvosk.dll` (Vosk 0.3.45). `src-tauri/vosk/` must hold the four runtime DLLs and the MSVC
+import library `libvosk.lib`; none of them are in git. Create them once with:
+
+```powershell
+src-tauri\vosk\setup.ps1                                  # default: ..\spikes\vosk-stt\.venv\Lib\site-packages\vosk
+src-tauri\vosk\setup.ps1 -From <site-packages>\vosk       # any `pip install vosk==0.3.45`
+```
+
+It copies `libvosk.dll`, `libstdc++-6.dll`, `libgcc_s_seh-1.dll` and `libwinpthread-1.dll` and builds `libvosk.lib`
+from the DLL's `vosk_*` exports with `dumpbin`/`lib` from the MSVC Build Tools. `build.rs` adds the folder to the
+linker path, links `libvosk.dll` with `/DELAYLOAD` (so the app and `cargo test` start without the DLL; the app checks
+for it next to the exe before listening and otherwise shows "Speech input runtime missing") and copies the DLLs into
+`target/<profile>/` for `tauri dev`. Release builds bundle them next to `talkerbox.exe` through `bundle.resources`.
+
+End-to-end check of the Vosk link with a real recording (16-bit PCM WAV, DLLs copied to `target\debug\deps`):
+
+```powershell
+$env:TALKERBOX_VOSK_MODEL = '<model dir>'; $env:TALKERBOX_VOSK_WAV = '<file.wav>'
+cargo test vosk_wav -- --ignored --nocapture
+```
+
+Licences: `libvosk.dll` Apache-2.0; `libstdc++-6.dll` and `libgcc_s_seh-1.dll` GPL-3.0 with the GCC Runtime Library
+Exception; `libwinpthread-1.dll` MIT-style. The Vosk small models are Apache-2.0. See the third-party notices in the
+top-level README.
+
 ## Security notes
 
 - All HTTP (Ollama, sidecar, downloads) runs in Rust. The webview's CSP allows only `'self'` and Tauri IPC.
@@ -174,5 +217,6 @@ src-tauri/src/
   term.rs            ring buffer + events for the Ollama terminal view (unit-tested)
   download.rs        resumable streaming downloads
   tts.rs             sidecar lifecycle and HTTP calls
+  stt.rs             speech input: mic capture, resampling, Vosk, idle timer, model zip install (unit-tested)
   config.rs          settings.json
 ```

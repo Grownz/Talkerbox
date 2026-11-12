@@ -6,6 +6,7 @@ mod hf;
 mod names;
 mod ollama;
 mod packs;
+mod stt;
 mod term;
 #[cfg(test)]
 mod testsrv;
@@ -130,6 +131,7 @@ struct AppState {
     tts_life: tokio::sync::Mutex<()>,
     cancels: Mutex<HashMap<String, Arc<Notify>>>,
     job: Option<KillJob>,
+    stt: Mutex<Option<stt::Listener>>,
 }
 
 impl AppState {
@@ -146,6 +148,9 @@ impl AppState {
     }
     /// App exit: Ollama is killed with its runners; the sidecar gets the same graceful stop as `tts_stop`.
     fn kill_children(&self) {
+        if let Some(l) = self.stt.lock().unwrap().take() {
+            l.stop();
+        }
         if let Some(mut c) = self.ollama.lock().unwrap().take() {
             kill_tree(&mut c);
         }
@@ -913,6 +918,90 @@ async fn tts_synthesize(state: State<'_, AppState>, text: String, voice: String,
     Ok(Response::new(out))
 }
 
+// ---------- speech input ----------
+
+fn stt_dir(app: &AppHandle) -> Res<PathBuf> {
+    Ok(data_dir(app)?.join("stt"))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SttModelView {
+    lang: &'static str,
+    name: &'static str,
+    installed: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SttStatus {
+    /// Why speech input cannot run at all (Vosk runtime missing), if so.
+    runtime_error: Option<String>,
+    listening: bool,
+    models: Vec<SttModelView>,
+}
+
+#[tauri::command]
+fn stt_status(app: AppHandle, state: State<'_, AppState>) -> Res<SttStatus> {
+    let dir = stt_dir(&app)?;
+    Ok(SttStatus {
+        runtime_error: stt::runtime_error(),
+        listening: state.stt.lock().unwrap().as_ref().is_some_and(|l| l.running()),
+        models: stt::MODELS.iter().map(|&(lang, name)| SttModelView { lang, name, installed: stt::installed(&dir.join(name)) }).collect(),
+    })
+}
+
+/// Downloads (resumable) and unpacks the Vosk model for `lang` into `stt/<model>` of the app data dir.
+#[tauri::command]
+async fn stt_download(app: AppHandle, state: State<'_, AppState>, id: String, lang: String, on_progress: Channel<Progress>) -> Res<bool> {
+    let name = stt::model_name(&lang)?;
+    let root = stt_dir(&app)?;
+    let zip = root.join(format!("{name}.zip"));
+    let url = reqwest::Url::parse(&stt::model_url(name)).map_err(|e| e.to_string())?;
+    {
+        let op = state.op(&id);
+        if download::download(&state.http, url, &zip, Some(stt::MAX_ZIP_BYTES), &op.notify, |p| send(&on_progress, p)).await? {
+            return Ok(true);
+        }
+    }
+    send(&on_progress, Progress { message: "Unpacking".into(), completed: None, total: None });
+    let z = zip.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || stt::install_model(&z, &root, name)).await.map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&zip);
+    r.map(|_| false)
+}
+
+/// Starts listening (stops a previous listener first). Errors: runtime or model missing, no microphone, access denied.
+#[tauri::command]
+async fn stt_start(app: AppHandle, state: State<'_, AppState>, lang: String, idle_secs: u32) -> Res<()> {
+    let dir = stt_dir(&app)?.join(stt::model_name(&lang)?);
+    if !stt::installed(&dir) {
+        return Err("The speech input model for this language is not installed; download it on the Speech page".into());
+    }
+    let old = state.stt.lock().unwrap().take();
+    let idle = Duration::from_secs(u64::from(idle_secs.clamp(1, 60)));
+    let a = app.clone();
+    let l = tauri::async_runtime::spawn_blocking(move || {
+        if let Some(o) = old {
+            o.stop();
+        }
+        stt::start(a, dir, idle)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    *state.stt.lock().unwrap() = Some(l);
+    Ok(())
+}
+
+#[tauri::command]
+async fn stt_stop(state: State<'_, AppState>) -> Res<()> {
+    let l = state.stt.lock().unwrap().take();
+    if let Some(l) = l {
+        tauri::async_runtime::spawn_blocking(move || l.stop()).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let http = reqwest::Client::builder()
@@ -930,6 +1019,7 @@ pub fn run() {
             tts_life: tokio::sync::Mutex::new(()),
             cancels: Mutex::default(),
             job: KillJob::new(),
+            stt: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -964,6 +1054,10 @@ pub fn run() {
             tts_stop,
             tts_voices,
             tts_synthesize,
+            stt_status,
+            stt_download,
+            stt_start,
+            stt_stop,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Talkerbox");

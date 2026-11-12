@@ -152,7 +152,7 @@
       </section>
       <section class="view page" hidden={view !== 'models' && view !== 'speech'} aria-label={view === 'speech' ? 'Speech' : 'Models'}>
         <div class="page-in">
-          <Models view={view === 'speech' ? 'speech' : 'models'} running={!!status?.running} onModelsChanged={() => modelsVersion++} />
+          <Models bind:settings view={view === 'speech' ? 'speech' : 'models'} running={!!status?.running} onModelsChanged={() => modelsVersion++} />
         </div>
       </section>
     {/if}

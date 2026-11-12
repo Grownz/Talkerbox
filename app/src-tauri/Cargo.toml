@@ -22,6 +22,11 @@ tokio = { version = "1", features = ["sync", "time", "fs", "io-util", "macros"] 
 sha2 = "0.10"
 # Job object so spawned processes die with the app, even on a crash.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_Security"] }
+vosk = "0.3.1"
+cpal = "0.18.2"
+zip = { version = "9.5.1", default-features = false, features = ["deflate-flate2"] }
+# zip disables flate2's default features; pick its pure-Rust backend (miniz_oxide is already in the tree).
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 # Smallest release binary (measured: default 12.3 MB, opt-level "s" 8.0 MB, "z" 6.8 MB).
 # panic stays "unwind": it would save another ~3 MB, but tokio (failed command tasks) and tao (Win32

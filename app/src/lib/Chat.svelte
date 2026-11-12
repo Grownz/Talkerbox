@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
+  import { listen } from '@tauri-apps/api/event'
+  import { joinDraft, sttLanguageName } from './stt'
   import {
     api,
     errText,
@@ -134,8 +136,81 @@
       if (tts?.running) await loadVoices()
       else if (settings.ttsEnabled) await startTts()
     })()
-    return () => speaker.stop()
+    // Speech input events; ignored once listening was stopped here (late events after stop/cancel).
+    const draft = (e: { payload: string }) => {
+      if (listening) input = joinDraft(sttBase, e.payload)
+    }
+    const offs = [
+      listen<string>('stt://partial', draft),
+      listen<string>('stt://final', draft),
+      listen<string>('stt://send', (e) => {
+        if (!listening) return
+        draft(e)
+        listening = false
+        send()
+      }),
+      listen<string>('stt://error', (e) => {
+        listening = false
+        error = e.payload
+      }),
+    ]
+    return () => {
+      speaker.stop()
+      if (listening) api.sttStop()
+      offs.forEach((p) => p.then((off) => off()))
+    }
   })
+
+  // ---------- speech input ----------
+  let listening = $state(false)
+  let sttStarting = $state(false)
+  // Composer text from before listening started; the transcript is appended to it.
+  let sttBase = ''
+
+  async function toggleMic() {
+    if (listening) return stopListening()
+    error = ''
+    const st = await api.sttStatus().catch((e) => ((error = errText(e)), null))
+    if (!st) return
+    if (st.runtimeError) {
+      error = st.runtimeError
+      return
+    }
+    const lang = settings.sttLanguage
+    if (!st.models.some((m) => m.lang === lang && m.installed)) {
+      error = `Speech input needs the ${sttLanguageName(lang)} model. Download it on the Speech page under "Speech input".`
+      return
+    }
+    // The microphone must not hear the reply being read aloud.
+    speaker.stop()
+    sttBase = input
+    sttStarting = true
+    listening = true
+    try {
+      await api.sttStart(lang, settings.sttIdleSecs)
+    } catch (e) {
+      listening = false
+      error = errText(e)
+    } finally {
+      sttStarting = false
+    }
+  }
+
+  /** Stops listening; the dictated text stays in the box for editing. */
+  function stopListening() {
+    listening = false
+    api.sttStop().catch(() => {})
+  }
+
+  function discardDictation() {
+    stopListening()
+    input = sttBase
+  }
+
+  function onSendClick() {
+    if (listening) stopListening()
+    send()
+  }
 
   async function send() {
     const text = input.trim()
@@ -182,10 +257,20 @@
   function onKey(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      send()
+      if (!sttStarting) onSendClick()
+    }
+  }
+
+  // While listening the textarea is read-only and rarely focused (the mic button is), so Enter is caught window-wide.
+  function onWindowKey(e: KeyboardEvent) {
+    if (listening && !sttStarting && e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      onSendClick()
     }
   }
 </script>
+
+<svelte:window onkeydown={onWindowKey} />
 
 <header class="vhead">
   <div class="fit" use:fit>
@@ -292,16 +377,34 @@
 </div>
 
 <footer class="composer">
-  <div class="comp-box">
+  {#if listening}
+    <div class="stt-status" role="status">
+      <Icon name="mic" />{sttStarting ? 'Starting the microphone…' : `Listening (${sttLanguageName(settings.sttLanguage)}): sends after ${settings.sttIdleSecs} s without new words`}
+    </div>
+  {/if}
+  <div class="comp-box" class:listening>
     <textarea
-      title={running ? 'Your message; Enter sends it, Shift+Enter adds a new line' : 'Start Ollama to chat'}
+      title={listening ? 'Dictated text (in progress); stop listening to edit it' : running ? 'Your message; Enter sends it, Shift+Enter adds a new line' : 'Start Ollama to chat'}
       aria-label="Message"
       bind:value={input}
       onkeydown={onKey}
       rows="2"
-      placeholder="Message the model…  Enter to send, Shift+Enter for a new line"
+      placeholder={listening ? 'Speak now…' : 'Message the model…  Enter to send, Shift+Enter for a new line'}
       disabled={!running}
+      readonly={listening}
     ></textarea>
+    {#if listening}
+      <Btn icon="x" label="Discard" class="ghost" title="Stop listening and discard the dictated text" onclick={discardDictation} disabled={sttStarting} />
+    {/if}
+    <Btn
+      icon="mic"
+      label={listening ? 'Stop' : 'Speak'}
+      class="mic {listening ? 'on' : 'ghost'}"
+      aria-pressed={listening}
+      title={sttStarting ? 'The microphone is starting' : listening ? 'Stop listening; the dictated text stays in the box for editing' : `Dictate a message (${sttLanguageName(settings.sttLanguage)}); it is sent after ${settings.sttIdleSecs} s without new words`}
+      onclick={toggleMic}
+      disabled={sttStarting}
+    />
     {#if opId}
       <Btn icon="stop" label="Stop" class="danger" title="Stop generating; the text so far is kept" onclick={stop} />
     {:else}
@@ -309,9 +412,9 @@
         icon="send"
         label="Send"
         class="primary"
-        title={!running ? 'Start Ollama first' : !settings.lastModel ? 'Choose a model first' : !input.trim() ? 'Type a message first' : 'Send the message to the model'}
-        onclick={send}
-        disabled={!running || !input.trim() || !settings.lastModel}
+        title={!running ? 'Start Ollama first' : !settings.lastModel ? 'Choose a model first' : !input.trim() ? 'Type or dictate a message first' : listening ? 'Stop listening and send the text now' : 'Send the message to the model'}
+        onclick={onSendClick}
+        disabled={!running || !input.trim() || !settings.lastModel || sttStarting}
       />
     {/if}
   </div>

@@ -1102,6 +1102,38 @@ svg.flag {
   border-color: var(--acc);
   box-shadow: 0 0 0 3px var(--acc-ring);
 }
+/* Speech input: red mic button and box while listening; the dictated draft is shown as in progress. */
+button.mic.on {
+  background: var(--err-fill);
+  border-color: var(--err-fill);
+  color: var(--err-on);
+}
+button.mic.on .i {
+  animation: pulse 1s infinite;
+}
+.comp-box.listening,
+.comp-box.listening:focus-within {
+  border-color: var(--err-fill);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--err-fill) 22%, transparent);
+}
+.comp-box.listening textarea {
+  font-style: italic;
+  color: var(--text-2);
+}
+.stt-opts {
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.stt-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 780px;
+  margin: 0 auto 6px;
+  font-size: var(--fs-sm);
+  color: var(--err);
+}
 .comp-box textarea {
   flex: 1;
   min-width: 0;

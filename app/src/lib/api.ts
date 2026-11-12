@@ -8,6 +8,16 @@ export interface Settings {
   voice: string | null
   ttsEnabled: boolean
   ttsSpeed: number
+  /** Speech input language: 'de' or 'en'. */
+  sttLanguage: string
+  /** Seconds without transcript change before dictated text is sent. */
+  sttIdleSecs: number
+}
+
+export interface SttStatus {
+  runtimeError: string | null
+  listening: boolean
+  models: { lang: string; name: string; installed: boolean }[]
 }
 
 export interface OllamaStatus {
@@ -159,6 +169,13 @@ export const api = {
   listFeatured: () => invoke<FeaturedPack[]>('list_featured'),
   installFeatured: (id: string, featuredId: string, onProgress: (p: Progress) => void) =>
     invoke<boolean>('install_featured', { id, featuredId, onProgress: channel(onProgress) }),
+
+  sttStatus: () => invoke<SttStatus>('stt_status'),
+  sttDownload: (id: string, lang: string, onProgress: (p: Progress) => void) =>
+    invoke<boolean>('stt_download', { id, lang, onProgress: channel(onProgress) }),
+  /** Transcript arrives as `stt://partial`/`stt://final` events, the idle-timeout text as `stt://send`. */
+  sttStart: (lang: string, idleSecs: number) => invoke<void>('stt_start', { lang, idleSecs }),
+  sttStop: () => invoke<void>('stt_stop'),
 }
 
 export function errText(e: unknown): string {

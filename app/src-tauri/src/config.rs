@@ -18,6 +18,10 @@ pub struct Settings {
     pub tts_model_dir: Option<String>,
     /// Display names keyed by Ollama model id.
     pub display_names: HashMap<String, String>,
+    /// Speech input language ("de" or "en").
+    pub stt_language: String,
+    /// Seconds without transcript change before speech input sends the text.
+    pub stt_idle_secs: u32,
 }
 
 impl Default for Settings {
@@ -30,6 +34,8 @@ impl Default for Settings {
             tts_speed: 1.0,
             tts_model_dir: None,
             display_names: HashMap::new(),
+            stt_language: "en".into(),
+            stt_idle_secs: 5,
         }
     }
 }
