@@ -10,10 +10,10 @@ your computer; after the one-time model downloads it works offline.
 [Changelog](CHANGELOG.md) · [Developer documentation](app/README.md) · [TTS sidecar](tts-sidecar/README.md) ·
 [Security](SECURITY.md) · [MIT licence](LICENSE)
 
-[![Talkerbox in 25 seconds: click to play the video](docs/promo/poster.jpg)](docs/promo/talkerbox-promo-16x9.mp4)
+https://github.com/user-attachments/assets/233fe9eb-b5b6-41e2-9cd7-487fb1f01628
 
-*25-second tour: pick a model, choose a voice, give it a face, then talk to it. Click the picture to play the
-video. The music was generated with [Suno](https://suno.com).*
+<sub>25-second tour: pick a model, choose a voice, give it a face, then talk to it. The music was generated with
+[Suno](https://suno.com).</sub>
 
 ## At a glance
 
