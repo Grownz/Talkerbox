@@ -10,11 +10,10 @@ your computer; after the one-time model downloads it works offline.
 [Changelog](CHANGELOG.md) · [Developer documentation](app/README.md) · [TTS sidecar](tts-sidecar/README.md) ·
 [Security](SECURITY.md) · [MIT licence](LICENSE)
 
-<video src="https://github.com/Grownz/Talkerbox/raw/main/docs/promo/talkerbox-promo-16x9.mp4" poster="https://github.com/Grownz/Talkerbox/raw/main/docs/promo/poster.jpg" controls muted playsinline width="100%"></video>
+[![Talkerbox in 25 seconds: click to play the video](docs/promo/poster.jpg)](docs/promo/talkerbox-promo-16x9.mp4)
 
-*25-second tour: pick a model, choose a voice, give it a face, then talk to it.
-[Watch the video](docs/promo/talkerbox-promo-16x9.mp4) if it does not play above. The music was generated with
-[Suno](https://suno.com).*
+*25-second tour: pick a model, choose a voice, give it a face, then talk to it. Click the picture to play the
+video. The music was generated with [Suno](https://suno.com).*
 
 ## At a glance
 
