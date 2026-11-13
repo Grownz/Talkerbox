@@ -22,6 +22,7 @@ export class RigPuppet implements Puppet {
     private host: HTMLElement,
     private rig: Rig,
     private img: HTMLImageElement,
+    fill: ImageBitmap | null = null,
   ) {
     // Real decoded size, so the 0..1 coordinates match what the editors showed.
     const iw = img.naturalWidth || rig.image.width
@@ -29,7 +30,7 @@ export class RigPuppet implements Puppet {
     const s = Math.min(1, MAX_SIDE / Math.max(iw, ih))
     this.w = Math.max(1, Math.round(iw * s))
     this.h = Math.max(1, Math.round(ih * s))
-    this.sprites = rigSprites(rig, img, this.w, this.h)
+    this.sprites = rigSprites(rig, img, this.w, this.h, fill)
     this.bob = !rig.parts.some((p) => p.role === 'mouth')
     this.ctx = this.canvas.getContext('2d')!
     this.canvas.setAttribute('role', 'img')

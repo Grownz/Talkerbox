@@ -57,6 +57,44 @@ pub fn installed(dir: &Path) -> bool {
     dir.join(RUNTIME_DLL).is_file() && size(ENCODER.file) == Some(ENCODER.size) && size(DECODER.file) == Some(DECODER.size)
 }
 
+/// Downloads one pinned file into `dir` unless it is already there (resumable), checks its size and SHA-256, and for
+/// the runtime wheel unpacks `onnxruntime.dll`. Returns true if cancelled. Used by smart select and the AI fill.
+pub async fn fetch_pinned(
+    http: &reqwest::Client,
+    cancel: &tokio::sync::Notify,
+    dir: &Path,
+    a: &'static Asset,
+    label: &str,
+    ch: &tauri::ipc::Channel<crate::Progress>,
+) -> Result<bool, String> {
+    use crate::{send, Progress};
+    let dest = dir.join(a.file);
+    let runtime = std::ptr::eq(a, &RUNTIME_WHEEL);
+    let have = if runtime { dir.join(RUNTIME_DLL).is_file() } else { std::fs::metadata(&dest).is_ok_and(|m| m.len() == a.size) };
+    if have {
+        return Ok(false);
+    }
+    let url = reqwest::Url::parse(a.url).map_err(|e| e.to_string())?;
+    let on = |p: Progress| send(ch, Progress { message: format!("{label}: {}", p.message), ..p });
+    if crate::download::download(http, url, &dest, Some(a.size), cancel, on).await? {
+        return Ok(true);
+    }
+    send(ch, Progress { message: format!("{label}: checking"), completed: None, total: None });
+    let d = dir.to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || {
+        verify(&dest, a)?;
+        if runtime {
+            let r = extract_runtime(&dest, &d);
+            let _ = std::fs::remove_file(&dest);
+            r?;
+        }
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(false)
+}
+
 /// Bytes of everything in the smart select folder (models, runtime, partial downloads).
 pub fn disk_size(dir: &Path) -> u64 {
     let files = std::fs::read_dir(dir).into_iter().flatten().flatten();
@@ -181,7 +219,7 @@ pub struct Sam {
 /// The DLL itself also stays loaded for the rest of the process (`ort` never unloads it).
 static ENV: Mutex<Option<Environment>> = Mutex::new(None);
 
-fn environment(dir: &Path) -> Result<Environment, String> {
+pub fn environment(dir: &Path) -> Result<Environment, String> {
     let mut env = ENV.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(e) = env.as_ref() {
         return Ok(e.clone());

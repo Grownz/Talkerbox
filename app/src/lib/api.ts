@@ -35,7 +35,8 @@ export interface InputDevice {
 export interface SttStatus {
   runtimeError: string | null
   listening: boolean
-  models: { lang: string; name: string; installed: boolean }[]
+  /** `bytes`: size on disk of the installed model folder. */
+  models: { lang: string; name: string; installed: boolean; bytes: number }[]
 }
 
 export interface OllamaStatus {
@@ -201,6 +202,8 @@ export const api = {
   /** While muted, speech input ignores the microphone. */
   sttMute: (muted: boolean) => invoke<void>('stt_mute', { muted }),
   sttStop: () => invoke<void>('stt_stop'),
+  /** Deletes the installed model for `lang`; refused while listening with it. */
+  sttRemoveModel: (lang: string) => invoke<void>('stt_remove_model', { lang }),
 
   /** Smart select (mask editor): ONNX Runtime and MobileSAM are downloaded on demand into `sam\`. */
   /** `bytes`: everything in `sam\` on disk. */
@@ -218,6 +221,8 @@ export const api = {
     new Uint8Array(await invoke<ArrayBuffer>('sam_decode', { points, labels, width, height })),
   samRelease: () => invoke<void>('sam_release'),
 
+  /** Avatar window only: its listeners are ready; the backend sends `avatar://ready` to the main window. */
+  puppetReady: () => invoke<void>('puppet_ready'),
   /** Saved avatar characters, sorted by name. */
   avatarList: () => invoke<Rig[]>('avatar_list'),
   /** Copies a PNG/JPEG/WebP (max 20 MB, 8192 px per side) picked in the open dialog into a new character. */
@@ -233,6 +238,29 @@ export const api = {
     const ext = rig.image.file.split('.').pop()
     return new Blob([buf], { type: ext === 'jpg' ? 'image/jpeg' : `image/${ext}` })
   },
+  /** The stored AI fill of a character (`fill.png`) as a Blob. */
+  avatarFill: async (id: string) => new Blob([await invoke<ArrayBuffer>('avatar_fill', { id })], { type: 'image/png' }),
+  /** Stores the AI fill PNG of a character; call right before `avatarSave` with a rig that references it. */
+  avatarSaveFill: async (id: string, png: Blob) =>
+    invoke<void>('avatar_save_fill', new Uint8Array(await png.arrayBuffer()), { headers: { 'x-id': id } }),
+
+  /** AI fill under moved parts: LaMa downloaded on demand into `inpaint\` (the ONNX Runtime is shared with smart select). */
+  inpaintStatus: () => invoke<{ installed: boolean; bytes: number; runtime: boolean }>('inpaint_status'),
+  inpaintDownload: (id: string, onProgress: (p: Progress) => void) => invoke<boolean>('inpaint_download', { id, onProgress: channel(onProgress) }),
+  inpaintRemove: () => invoke<void>('inpaint_remove'),
+  /** 512 x 512 RGBA in (alpha 255 marks the pixels to fill), filled RGBA out. */
+  inpaintRun: async (rgba: Uint8ClampedArray) =>
+    new Uint8ClampedArray(await invoke<ArrayBuffer>('inpaint_run', new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength))),
+
+  /** Face detection in the part editor: MediaPipe face models downloaded on demand into `face\` (runtime shared with smart select). */
+  faceStatus: () => invoke<{ installed: boolean; bytes: number; runtime: boolean }>('face_status'),
+  faceDownload: (id: string, onProgress: (p: Progress) => void) => invoke<boolean>('face_download', { id, onProgress: channel(onProgress) }),
+  faceRemove: () => invoke<void>('face_remove'),
+  /** 478 face landmarks (normalised to the image) of an RGBA image with a long side of at most 1024; rejects when no face is found. */
+  faceDetect: (rgba: Uint8ClampedArray, width: number, height: number) =>
+    invoke<{ points: Point[]; score: number; presence: number; ms: number }>('face_detect', new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength), {
+      headers: { 'x-width': String(width), 'x-height': String(height) },
+    }),
 }
 
 export function errText(e: unknown): string {

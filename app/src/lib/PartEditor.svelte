@@ -19,7 +19,9 @@
     wouldLoop,
     type PartRole,
     type Point,
+    type FillMode,
     type Rig,
+    type RigFill,
     type RigMouth,
     type RigPart,
   } from './rig'
@@ -27,8 +29,13 @@
   import { DEFAULT_LID, DEFAULT_MOUTH, LIMB_ROLES, REST, bbox, defaultPivot, drawRig, rigMouthGeo, sampleRing, type Pose } from './rigRender'
   import { VISEMES, type Viseme } from './viseme'
   import { maskToPolygon } from './smartSelect'
+  import AiFillPanel from './AiFillPanel.svelte'
+  import type { AiFill } from './aiFill'
+  import { fillPolygons, regionSig } from './fillUnder'
   import SmartSelectBar from './SmartSelectBar.svelte'
   import { SmartSession } from './smartSession.svelte'
+  import FacePanel from './FacePanel.svelte'
+  import { faceParts } from './faceParts'
 
   let { rig, onClose, onSaved }: { rig: Rig; onClose: () => void; onSaved: (r: Rig) => void } = $props()
 
@@ -36,7 +43,11 @@
   /** Extra outlines of the mouth part: the open-mouth shape and the two lips. */
   type Sub = 'interior' | 'lipUpper' | 'lipLower'
   type Subs = Record<Sub, { pts: Point[]; closed: boolean }>
-  type Snapshot = { parts: EPart[]; subs: Subs; corners: [Point, Point] | null; mouthColor: string; warp: number }
+  /** Background under moved parts: mode, AI result (area, parts signature, image; `png` when not saved yet, `stored`
+   * when the saved character has one). */
+  type FillState = { mode: FillMode; rect: [number, number, number, number] | null; sig: string | null; img: ImageBitmap | null; png: Blob | null; stored: boolean }
+  const NO_FILL: FillState = { mode: 'none', rect: null, sig: null, img: null, png: null, stored: false }
+  type Snapshot = { parts: EPart[]; subs: Subs; corners: [Point, Point] | null; mouthColor: string; warp: number; fill: FillState }
   const NO_SUBS: Subs = { interior: { pts: [], closed: false }, lipUpper: { pts: [], closed: false }, lipLower: { pts: [], closed: false } }
   const SUB: Record<Sub, { what: string; colour: string }> = {
     interior: { what: 'the open mouth (the dark inside when the mouth is open)', colour: '#ffffff' },
@@ -75,6 +86,7 @@
   let subs = $state.raw<Subs>(NO_SUBS)
   let corners = $state.raw<[Point, Point] | null>(null)
   let warp = $state(DEFAULT_WARP)
+  let fill = $state.raw<FillState>(NO_FILL)
   let viseme = $state<Viseme>('closed')
   let mouthColor = $state(DEFAULT_MOUTH)
   let selId = $state<string | null>(null)
@@ -103,6 +115,10 @@
   let picking = $state<PartRole | null>(null)
   /** Offer Auto-split right after a mouth was created with Smart select. */
   let offerSplit = $state(false)
+  // "Detect face": panel open, and the note on the last detection with the undo depth right after it (its Undo
+  // button only shows while that detection is still the last step).
+  let faceOpen = $state(false)
+  let faceNote = $state<{ text: string; at: number } | null>(null)
 
   let canvas: HTMLCanvasElement
   let wrap: HTMLDivElement
@@ -120,7 +136,7 @@
   const kind = $derived(deriveKind(parts.filter((p) => p.closed)))
   const outline = $derived(maskOutline(base))
   const limbs = $derived(LIMB_ROLES.filter((r) => parts.some((p) => p.role === r && p.closed)))
-  const key = () => JSON.stringify([parts, subs, corners, mouthColor, warp])
+  const key = () => JSON.stringify([parts, subs, corners, mouthColor, warp, fill.mode, fill.rect, fill.sig, !!fill.png])
   const dirty = $derived(loaded && key() !== clean)
 
   $effect(() => {
@@ -158,9 +174,16 @@
       } else if (strict && (subs.lipUpper.pts.length || subs.lipLower.pts.length))
         error ??= 'Lips: outline and close both the upper and the lower lip, or clear them'
     }
-    return { rig: { ...base, parts: out, mouth, kind: deriveKind(out) }, error }
+    let rigFill: RigFill | undefined
+    if (fill.mode !== 'none') {
+      rigFill = { mode: fill.mode }
+      if (fill.mode === 'ai' && fill.rect && (fill.png || fill.stored)) Object.assign(rigFill, { image: 'fill.png', rect: fill.rect, sig: fill.sig ?? undefined })
+    }
+    return { rig: { ...base, parts: out, mouth, fill: rigFill, kind: deriveKind(out) }, error }
   }
   const draft = $derived.by(() => build(false).rig)
+  const fillPolys = $derived(fillPolygons(draft.parts))
+  const aiState = $derived(!fill.rect ? 'none' : fill.sig === regionSig(fillPolys) ? 'ready' : 'stale')
 
   const warning = $derived.by(() => {
     if (!parts.length) return 'No parts yet: choose a role, press Add, then click points around that part.'
@@ -201,6 +224,13 @@
     corners = r.mouth?.corners ?? null
     warp = r.mouth?.warp ?? DEFAULT_WARP
     mouthColor = r.mouth?.color ?? DEFAULT_MOUTH
+    fill = { ...NO_FILL, mode: r.fill?.mode ?? 'none', rect: r.fill?.rect ?? null, sig: r.fill?.sig ?? null, stored: !!r.fill?.image }
+    // The stored AI fill for the preview (not part of the undo key; a failed read shows the classic fill).
+    if (r.fill?.image)
+      void api
+        .avatarFill(r.id)
+        .then(createImageBitmap)
+        .then((img) => (fill = fill.stored && !fill.png ? { ...fill, img } : fill), () => {})
     if (!parts.some((p) => p.id === selId)) selId = parts[0]?.id ?? null
     target = 'polygon'
     selPoint = -1
@@ -210,17 +240,28 @@
   }
 
   // ---------- history ----------
-  const snapshot = (): Snapshot => ({ parts, subs, corners, mouthColor, warp })
+  const snapshot = (): Snapshot => ({ parts, subs, corners, mouthColor, warp, fill })
   function push(s: Snapshot) {
     undoStack = [...undoStack.slice(-199), s]
     redoStack = []
   }
   const commit = () => push(snapshot())
   function restore(s: Snapshot) {
-    ;({ parts, subs, corners, mouthColor, warp } = s)
+    ;({ parts, subs, corners, mouthColor, warp, fill } = s)
     if (!parts.some((p) => p.id === selId)) selId = parts[0]?.id ?? null
     selPoint = -1
   }
+  function setFillMode(mode: FillMode) {
+    commit()
+    fill = { ...fill, mode }
+    if (preview === 'off' && mode !== 'none') preview = 'checker'
+  }
+  function aiResult(r: AiFill) {
+    commit()
+    fill = { ...fill, rect: r.rect, sig: regionSig(fillPolys), img: r.img, png: r.png }
+    if (preview === 'off') preview = 'checker'
+  }
+
   /** While picking, Undo removes the last Smart select point first. */
   const undoAny = () => (picking && smart.prompts.length ? smart.undo() : undo())
   function undo() {
@@ -334,6 +375,32 @@
     stopPick()
     offerSplit = role === 'mouth'
   }
+  /** Adds the detected eyes and mouth (with lips and corners) as one undo step; roles that already have a part keep it. */
+  function applyFace(points: Point[]) {
+    const f = faceParts(points)
+    if (!f) return void (faceNote = { text: 'The face found is too small to outline.', at: -1 })
+    const found: [PartRole, Point[]][] = [['eyeR', f.eyeR], ['eyeL', f.eyeL], ['mouth', f.mouth]]
+    const add = found.filter(([r]) => !parts.some((p) => p.role === r))
+    const kept = found.filter(([r]) => !add.some(([a]) => a === r)).map(([r]) => roleInfo(r).label.toLowerCase())
+    if (!add.length) return void (faceNote = { text: 'Both eyes and the mouth already exist; delete the ones to detect again.', at: -1 })
+    if (parts.length + add.length > MAX_PARTS) return void (faceNote = { text: `At most ${MAX_PARTS} parts.`, at: -1 })
+    commit()
+    const made = add.map(([role, polygon]): EPart => {
+      const p: EPart = { id: newId(role), role, label: '', polygon, closed: true, pivot: defaultPivot(role, polygon), parent: '', lid: '' }
+      if (isEye(role)) p.lid = sample(p)
+      return p
+    })
+    parts = [...parts, ...made]
+    if (made.some((p) => p.role === 'mouth')) {
+      subs = { ...subs, lipUpper: { pts: f.lipUpper, closed: true }, lipLower: { pts: f.lipLower, closed: true } }
+      corners = f.corners
+    }
+    select(made.at(-1)!.id)
+    preview = 'off'
+    const names = made.map((p) => roleInfo(p.role).label.toLowerCase()).join(', ')
+    faceNote = { text: `Added ${names}${made.some((p) => p.role === 'mouth') ? ' with both lips' : ''}${kept.length ? `; kept your ${kept.join(', ')}` : ''}. Check the outlines and drag points to fit.`, at: undoStack.length }
+  }
+
   const pickColour = (r: PartRole): [number, number, number] => {
     const h = roleInfo(r).colour
     return [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)) as [number, number, number]
@@ -484,7 +551,7 @@
     if (preview !== 'off') {
       ctx.save()
       ctx.transform(z, 0, 0, z, ox, oy)
-      drawRig(ctx, draft, bitmap, W, H, pose)
+      drawRig(ctx, draft, bitmap, W, H, pose, undefined, fill.img)
       ctx.restore()
       return
     }
@@ -596,7 +663,7 @@
   }
 
   $effect(() => {
-    void [parts, subs, corners, warp, mouthColor, selId, selPoint, target, hidden, preview, pose, spaceDown, loaded, picking, smart.prompts, smart.proposal]
+    void [parts, subs, corners, warp, mouthColor, fill, selId, selPoint, target, hidden, preview, pose, spaceDown, loaded, picking, smart.prompts, smart.proposal]
     draw()
   })
 
@@ -784,6 +851,7 @@
     if (err) return
     saving = true
     try {
+      if (fill.png && next.fill?.image) await api.avatarSaveFill(base.id, fill.png)
       const saved = await api.avatarSave(next)
       load(saved)
       status = 'Saved. The avatar window reloads the character.'
@@ -961,7 +1029,26 @@
             disabled={!loaded || (!picking && parts.length >= MAX_PARTS)}
             onclick={() => (picking ? stopPick() : startPick())}><Icon name="target" />Pick</button
           >
+          <button
+            type="button"
+            class="sm"
+            aria-pressed={faceOpen}
+            title="Detect face: find both eyes and the mouth with its lips automatically (for photos and realistic paintings)"
+            disabled={!loaded}
+            onclick={() => ((faceOpen = !faceOpen), (faceNote = null))}><Icon name="user" />Face</button
+          >
         </div>
+        {#if faceOpen && !picking}
+          <div class="picker" role="group" aria-label="Detect face">
+            <FacePanel image={() => ({ bitmap, W, H })} disabled={parts.length >= MAX_PARTS} onResult={applyFace} />
+            {#if faceNote}
+              <span class="help">{faceNote.text}</span>
+              {#if faceNote.at === undoStack.length}
+                <button type="button" class="sm" title="Remove the detected parts again (Ctrl+Z)" onclick={() => ((faceNote = null), undo())}><Icon name="undo" />Undo</button>
+              {/if}
+            {/if}
+          </div>
+        {/if}
         {#if picking}
           <div class="picker" role="group" aria-label="Pick with Smart select">
             <span class="help">Picking: {roleInfo(picking).label}</span>
@@ -1138,6 +1225,35 @@
           </div>
         {/if}
 
+        <div class="fillsec" role="group" aria-label="Background under moved parts">
+          <label
+            class="opt"
+            title="What shows where an arm, hand or leg was once it moves. Makes arms that cross the body look right: the copy of the arm left in the picture is cut out or painted over."
+          >
+            <span class="label">Under moved parts</span>
+            <span class="select-wrap">
+              <select value={fill.mode} onchange={(e) => setFillMode(e.currentTarget.value as FillMode)}>
+                <option value="none">Original picture</option>
+                <option value="transparent">Transparent</option>
+                <option value="classic">Fill (classic)</option>
+                <option value="ai">Fill (AI)</option>
+              </select><Icon name="chev-down" />
+            </span>
+          </label>
+          {#if fill.mode !== 'none'}
+            <p class="help">
+              {#if !fillPolys.length}Needs arm, hand or leg parts.
+              {:else if fill.mode === 'transparent'}The area arms, hands and legs leave behind is cut out (window background or green screen shows).
+              {:else if fill.mode === 'classic'}That area is filled smoothly from its surroundings; good for plain backgrounds and clothing.
+              {:else}An AI model paints that area (patterns, stripes, backgrounds); the result is saved with the character.{/if}
+              Use Play demo or the arm sliders to check it.
+            </p>
+          {/if}
+          {#if fill.mode === 'ai'}
+            <AiFillPanel image={() => ({ bitmap, W, H })} polys={fillPolys} state={aiState} onResult={aiResult} />
+          {/if}
+        </div>
+
         <div class="pose">
           <div class="row">
             <span class="label">Preview</span>
@@ -1288,10 +1404,19 @@
   }
   .add {
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
   }
   .add .select-wrap {
+    flex: 1 1 100%;
+  }
+  .add > button {
     flex: 1;
+  }
+  .fillsec {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
   .picker {
     display: flex;

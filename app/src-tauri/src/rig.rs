@@ -18,6 +18,8 @@ const MAX_MOUTH_STATES: usize = 8;
 const MAX_NAME_CHARS: usize = 80;
 const MAX_ID_CHARS: usize = 64;
 const IMAGE_FILES: [&str; 3] = ["image.png", "image.jpg", "image.webp"];
+/// Stored AI fill of the area under moved parts (optional, written by `save_fill`).
+pub const FILL_FILE: &str = "fill.png";
 
 pub type Point = [f64; 2];
 
@@ -114,6 +116,31 @@ pub struct Mouth {
     pub warp: Option<f64>,
 }
 
+/// How the area a moved part uncovers is drawn: `none` shows the original pixels (as before), `transparent` cuts it
+/// out, `classic` fills it in the renderer (push-pull), `ai` uses the stored LaMa result (`image`, covering `rect`
+/// = [x0, y0, x1, y1] of the image, 0..1) over the classic fill. `sig` identifies the parts the AI fill was made for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FillMode {
+    #[default]
+    None,
+    Transparent,
+    Classic,
+    Ai,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Fill {
+    pub mode: FillMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rect: Option<[f64; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Rig {
@@ -129,6 +156,8 @@ pub struct Rig {
     pub parts: Vec<Part>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mouth: Option<Mouth>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<Fill>,
     /// Epoch ms.
     pub created_at: u64,
     pub updated_at: u64,
@@ -281,6 +310,29 @@ pub fn validate(r: &Rig) -> Result<(), String> {
             return Err("Face warp must be from 0 to 1".into());
         }
     }
+    if let Some(f) = &r.fill {
+        check_fill(f)?;
+    }
+    Ok(())
+}
+
+fn check_fill(f: &Fill) -> Result<(), String> {
+    match (&f.image, &f.rect) {
+        (None, None) => {}
+        (Some(i), Some([x0, y0, x1, y1])) => {
+            if i != FILL_FILE {
+                return Err("Invalid fill image file name".into());
+            }
+            let ok = [x0, y0, x1, y1].iter().all(|v| v.is_finite() && (0.0..=1.0).contains(*v)) && x0 < x1 && y0 < y1;
+            if !ok {
+                return Err("Invalid fill area".into());
+            }
+        }
+        _ => return Err("A fill image needs its area and the other way round".into()),
+    }
+    if f.sig.as_deref().is_some_and(|s| s.is_empty() || s.len() > 16 || !s.chars().all(|c| c.is_ascii_hexdigit())) {
+        return Err("Invalid fill signature".into());
+    }
     Ok(())
 }
 
@@ -421,6 +473,7 @@ pub fn import(root: &Path, src: &Path) -> Result<Rig, String> {
         mask: Mask::default(),
         parts: Vec::new(),
         mouth: None,
+        fill: None,
         created_at: now,
         updated_at: now,
     };
@@ -447,8 +500,37 @@ pub fn save(root: &Path, mut rig: Rig) -> Result<Rig, String> {
     rig.created_at = old.created_at;
     rig.updated_at = now_ms().max(old.updated_at);
     rig.kind = derive_kind(&rig.parts);
-    write_rig(&root.join(&rig.id), &rig)?;
+    let dir = root.join(&rig.id);
+    let uses_fill = rig.fill.as_ref().is_some_and(|f| f.image.is_some());
+    if uses_fill && !dir.join(FILL_FILE).is_file() {
+        return Err("The AI fill image is missing; generate it again".into());
+    }
+    write_rig(&dir, &rig)?;
+    if !uses_fill {
+        let _ = std::fs::remove_file(dir.join(FILL_FILE)); // no longer referenced
+    }
     Ok(rig)
+}
+
+/// Stores the AI fill image of a character (`fill.png`, written atomically). PNG only, same limits as the image.
+pub fn save_fill(root: &Path, id: &str, png: &[u8]) -> Result<(), String> {
+    load(root, id)?;
+    if png.len() as u64 > MAX_IMAGE_BYTES {
+        return Err("The fill image is too large".into());
+    }
+    if sniff_image(png)?.0 != "png" {
+        return Err("The fill image must be a PNG".into());
+    }
+    crate::config::write_atomic(&root.join(id).join(FILL_FILE), png)
+}
+
+/// The stored AI fill image of a character.
+pub fn fill(root: &Path, id: &str) -> Result<Vec<u8>, String> {
+    let rig = load(root, id)?;
+    if !rig.fill.is_some_and(|f| f.image.is_some()) {
+        return Err("This character has no AI fill".into());
+    }
+    std::fs::read(root.join(id).join(FILL_FILE)).map_err(|e| format!("Cannot read the fill image: {e}"))
 }
 
 pub fn rename(root: &Path, id: &str, name: &str) -> Result<Rig, String> {
@@ -513,6 +595,24 @@ pub fn avatar_delete(app: AppHandle, id: String) -> Result<(), String> {
 pub async fn avatar_image(app: AppHandle, id: String) -> Result<Response, String> {
     let root = root(&app)?;
     tauri::async_runtime::spawn_blocking(move || image(&root, &id)).await.map_err(|e| e.to_string())?.map(Response::new)
+}
+
+/// Raw PNG bytes of the character's AI fill (the avatar window draws it under moved parts).
+#[tauri::command]
+pub async fn avatar_fill(app: AppHandle, id: String) -> Result<Response, String> {
+    let root = root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || fill(&root, &id)).await.map_err(|e| e.to_string())?.map(Response::new)
+}
+
+/// Stores the AI fill (raw body: PNG bytes; header `x-id`). The editor calls it right before saving the rig.
+#[tauri::command]
+pub async fn avatar_save_fill(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let tauri::ipc::InvokeBody::Raw(png) = request.body() else {
+        return Err("Expected raw PNG bytes".into());
+    };
+    let id = request.headers().get("x-id").and_then(|v| v.to_str().ok()).ok_or("Missing header x-id")?.to_string();
+    let (root, png) = (root(&app)?, png.clone());
+    tauri::async_runtime::spawn_blocking(move || save_fill(&root, &id, &png)).await.map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
@@ -738,6 +838,39 @@ mod tests {
         delete(&avatars, &rig.id).unwrap();
         assert!(load(&avatars, &rig.id).is_err());
         assert!(delete(&avatars, &rig.id).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fill_is_validated_stored_and_cleaned_up() {
+        let root = tmp_root("fill");
+        let avatars = root.join("avatars");
+        let rig = import_png(&root, "f.png", 40, 30);
+        let ok = |f: Fill| validate(&Rig { fill: Some(f), ..rig.clone() });
+        let ai = Fill { mode: FillMode::Ai, image: Some(FILL_FILE.into()), rect: Some([0.1, 0.2, 0.5, 0.9]), sig: Some("0a1b2c3d".into()) };
+        assert!(ok(Fill { mode: FillMode::Transparent, ..Fill::default() }).is_ok());
+        assert!(ok(ai.clone()).is_ok());
+        assert!(ok(Fill { image: Some("../x.png".into()), ..ai.clone() }).is_err());
+        assert!(ok(Fill { rect: None, ..ai.clone() }).is_err(), "image without area");
+        assert!(ok(Fill { image: None, ..ai.clone() }).is_err(), "area without image");
+        assert!(ok(Fill { rect: Some([0.5, 0.2, 0.1, 0.9]), ..ai.clone() }).is_err());
+        assert!(ok(Fill { rect: Some([0.0, 0.0, 1.0, f64::NAN]), ..ai.clone() }).is_err());
+        assert!(ok(Fill { sig: Some("not hex!".into()), ..ai.clone() }).is_err());
+        // JSON: lowercase modes, old rigs without `fill` still load (covered by the old-format test).
+        assert_eq!(serde_json::from_str::<Fill>(r#"{"mode":"classic"}"#).unwrap().mode, FillMode::Classic);
+        assert!(serde_json::from_str::<Fill>(r#"{"mode":"blur"}"#).is_err());
+
+        // The image must be stored before a rig may reference it; dropping the reference deletes it.
+        assert!(save(&avatars, Rig { fill: Some(ai.clone()), ..rig.clone() }).unwrap_err().contains("missing"));
+        assert!(save_fill(&avatars, &rig.id, b"GIF89a....").is_err(), "PNG only");
+        save_fill(&avatars, &rig.id, &png(10, 10)).unwrap();
+        let saved = save(&avatars, Rig { fill: Some(ai.clone()), ..rig.clone() }).unwrap();
+        assert_eq!(fill(&avatars, &rig.id).unwrap(), png(10, 10));
+        assert_eq!(load(&avatars, &rig.id).unwrap().fill, Some(ai));
+        save(&avatars, Rig { fill: Some(Fill { mode: FillMode::Classic, ..Fill::default() }), ..saved }).unwrap();
+        assert!(!avatars.join(&rig.id).join(FILL_FILE).exists());
+        assert!(fill(&avatars, &rig.id).is_err());
+        assert!(save_fill(&avatars, "missing", &png(1, 1)).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 

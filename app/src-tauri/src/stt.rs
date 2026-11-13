@@ -101,6 +101,42 @@ pub fn install_model(zip: &Path, root: &Path, name: &str) -> Result<(), String> 
     r
 }
 
+/// Bytes of all files under `dir` (0 if it does not exist).
+pub fn disk_size(dir: &Path) -> u64 {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => disk_size(&e.path()),
+            Ok(t) if t.is_file() => e.metadata().map_or(0, |m| m.len()),
+            _ => 0, // symlinks are not followed
+        })
+        .sum()
+}
+
+/// Deletes `root/<name>`. `name` must come from `MODELS` (see `model_name`), never from the caller.
+/// The folder is first renamed away, so a file held open elsewhere fails the rename and leaves the model intact;
+/// after that the model no longer counts as installed, and a folder that cannot be fully deleted is retried by
+/// `clean_stale`.
+pub fn remove_model(root: &Path, name: &str) -> Result<(), String> {
+    let dir = root.join(name);
+    if !dir.exists() {
+        return Ok(());
+    }
+    let trash = root.join(format!(".remove-{name}"));
+    let _ = std::fs::remove_dir_all(&trash);
+    std::fs::rename(&dir, &trash).map_err(|e| format!("Cannot delete {}: {e}. Close programs using it and try again.", dir.display()))?;
+    std::fs::remove_dir_all(&trash).map_err(|e| format!("The model was removed, but {} could not be fully deleted yet: {e}", trash.display()))
+}
+
+/// Deletes leftovers of removals that could not finish (see `remove_model`).
+pub fn clean_stale(root: &Path) {
+    for (_, name) in MODELS {
+        let _ = std::fs::remove_dir_all(root.join(format!(".remove-{name}")));
+    }
+}
+
 // ---------- pure audio/timer logic ----------
 
 /// Downmix to mono and resample to 16 kHz by averaging the input samples of each output period
@@ -177,11 +213,17 @@ fn join(parts: &[String], partial: &str) -> String {
 pub struct Listener {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    model_dir: PathBuf,
 }
 
 impl Listener {
     pub fn running(&self) -> bool {
         self.thread.as_ref().is_some_and(|t| !t.is_finished())
+    }
+
+    /// The thread owns the loaded model until it ends, so a running listener keeps this folder in use.
+    pub fn uses(&self, model_dir: &Path) -> bool {
+        self.running() && self.model_dir == model_dir
     }
 
     /// Signals the thread and waits for it (at most one 100 ms poll plus one recognizer call).
@@ -214,12 +256,13 @@ pub fn start(app: AppHandle, opts: Options) -> Result<(Listener, Option<String>)
     let (ready_tx, ready_rx) = sync_channel(1);
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
+    let model_dir = opts.model_dir.clone();
     let thread = std::thread::Builder::new()
         .name("stt".into())
         .spawn(move || run(app, opts, flag, ready_tx))
         .map_err(|e| format!("Cannot start speech input: {e}"))?;
     match ready_rx.recv() {
-        Ok(Ok(hint)) => Ok((Listener { stop, thread: Some(thread) }, hint)),
+        Ok(Ok(hint)) => Ok((Listener { stop, thread: Some(thread), model_dir }, hint)),
         Ok(Err(e)) => {
             let _ = thread.join();
             Err(e)
@@ -500,6 +543,41 @@ mod tests {
     }
 
     #[test]
+    fn remove_model_deletes_only_that_model() {
+        let d = temp("remove");
+        let z = d.join("m.zip");
+        make_zip(&z, &[("m/am/final.mdl", &[0u8; 10]), ("m/conf/model.conf", &[0u8; 5])]);
+        install_model(&z, &d, "m").unwrap();
+        std::fs::create_dir_all(d.join("other")).unwrap();
+        std::fs::write(d.join("other/keep"), b"x").unwrap();
+        assert_eq!(disk_size(&d.join("m")), 15, "counts files in subfolders");
+        remove_model(&d, "m").unwrap();
+        assert!(!d.join("m").exists() && !d.join(".remove-m").exists());
+        assert_eq!(disk_size(&d.join("m")), 0);
+        assert!(d.join("other/keep").exists() && z.exists(), "siblings stay");
+        assert!(remove_model(&d, "m").is_ok(), "nothing to remove is fine");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn remove_model_keeps_a_model_whose_files_are_open() {
+        let d = temp("locked");
+        std::fs::create_dir_all(d.join("m/am")).unwrap();
+        std::fs::write(d.join("m/am/final.mdl"), b"x").unwrap();
+        // Windows refuses to rename a folder with an open file; the model must then stay intact.
+        let open = std::fs::File::open(d.join("m/am/final.mdl")).unwrap();
+        let r = remove_model(&d, "m");
+        if cfg!(windows) {
+            assert!(r.unwrap_err().contains("Cannot delete"));
+            assert!(installed(&d.join("m")));
+        }
+        drop(open);
+        remove_model(&d, "m").unwrap();
+        assert!(!d.join("m").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn zip_slip_is_rejected() {
         let d = temp("slip");
         let z = d.join("evil.zip");
@@ -552,6 +630,9 @@ mod tests {
     fn known_models_and_urls() {
         assert_eq!(model_name("de"), Ok("vosk-model-small-de-0.15"));
         assert!(model_name("fr").is_err());
+        for bad in ["", "..", "../de", "de/..", "vosk-model-small-de-0.15", "DE"] {
+            assert!(model_name(bad).is_err(), "{bad:?} must be rejected");
+        }
         assert_eq!(model_url("vosk-model-small-de-0.15"), "https://alphacephei.com/vosk/models/vosk-model-small-de-0.15.zip");
     }
 }

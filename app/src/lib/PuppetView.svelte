@@ -1,7 +1,7 @@
 <script lang="ts">
   // Avatar window: plays mouth envelopes and shapes from the main window on its own rAF clock; poseGen.ts turns them
   // into mouth, blink, sway and gestures.
-  import { emitTo, listen } from '@tauri-apps/api/event'
+  import { listen } from '@tauri-apps/api/event'
   import { onMount } from 'svelte'
   import { api } from './api'
   import type { AvatarOptions } from './avatar.svelte'
@@ -37,7 +37,9 @@
           const img = new Image()
           img.src = url
           await img.decode()
-          if (token === loading) next = new RigPuppet(host, rig, img)
+          // The AI fill under moved parts; without it (or if it cannot be read) the classic fill is used.
+          const fill = rig.fill?.mode === 'ai' && rig.fill.image ? await api.avatarFill(id).then(createImageBitmap, () => null) : null
+          if (token === loading) next = new RigPuppet(host, rig, img, fill)
         } catch (e) {
           console.warn(`Avatar character '${id}' could not be shown; using the demo figure`, e)
         }
@@ -69,7 +71,7 @@
     }
     document.addEventListener('visibilitychange', run)
     run()
-    const ready = () => emitTo('main', 'avatar://ready')
+    const ready = () => api.puppetReady()
     const off = [
       listen<AvatarSentence>('avatar://sentence', (e) => {
         // Delivery latency between the windows; the envelope itself is timed by startMs, not by arrival.

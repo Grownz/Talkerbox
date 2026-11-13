@@ -38,6 +38,18 @@ export interface RigMouth {
 }
 export const DEFAULT_WARP = 0.6
 
+/** How the area a moved part uncovers is drawn (see fillUnder.ts); `none` keeps the original pixels. */
+export type FillMode = 'none' | 'transparent' | 'classic' | 'ai'
+export const FILL_MODES: FillMode[] = ['none', 'transparent', 'classic', 'ai']
+export interface RigFill {
+  mode: FillMode
+  /** Stored AI result (`fill.png` in the character folder) and the image area it covers: [x0, y0, x1, y1], 0..1. */
+  image?: 'fill.png'
+  rect?: [number, number, number, number]
+  /** Signature of the moving parts the AI fill was made for (`regionSig`). */
+  sig?: string
+}
+
 export interface Rig {
   version: number
   id: string
@@ -49,6 +61,7 @@ export interface Rig {
   mask: { points: Point[]; smoothed?: Point[]; smooth?: number; snap?: number }
   parts: RigPart[]
   mouth?: RigMouth
+  fill?: RigFill
   /** Epoch ms. */
   createdAt: number
   updatedAt: number
@@ -130,6 +143,15 @@ export function validateRig(r: Rig): string | null {
   if ((lipUpper && !polygonOk(lipUpper, MAX_POLYGON_POINTS)) || (lipLower && !polygonOk(lipLower, MAX_POLYGON_POINTS))) return 'Invalid lip shape'
   if (corners && (corners.length !== 2 || !inImage(corners))) return 'Invalid mouth corners'
   if (warp !== undefined && !inImage([[warp, 0]])) return 'Face warp must be from 0 to 1'
+  const f = r.fill
+  if (f) {
+    if (!FILL_MODES.includes(f.mode)) return 'Invalid fill mode'
+    if (!f.image !== !f.rect) return 'A fill image needs its area and the other way round'
+    if (f.image !== undefined && f.image !== 'fill.png') return 'Invalid fill image file name'
+    if (f.rect && (f.rect.length !== 4 || !inImage([[f.rect[0], f.rect[1]], [f.rect[2], f.rect[3]]]) || f.rect[0] >= f.rect[2] || f.rect[1] >= f.rect[3]))
+      return 'Invalid fill area'
+    if (f.sig !== undefined && !/^[0-9a-fA-F]{1,16}$/.test(f.sig)) return 'Invalid fill signature'
+  }
   return null
 }
 

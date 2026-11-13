@@ -125,7 +125,14 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   mouth, the editor offers "Auto-split lips". It uses the same model, download, removal and per-editor release as the
   mask editor (shared code: `src/lib/smartSession.svelte.ts`, `src/lib/SmartSelectBar.svelte`). Checked with the real
   model on a synthetic figure (one click each): eye, mouth and arm outlines overlap the drawn shapes by 0.89, 0.91 and
-  0.92 IoU at the 512 px working size, with the pivots at the eye centre and the arm's top end. Roles: left/right eye, mouth, left/right arm, hand and leg (the
+  0.92 IoU at the 512 px working size, with the pivots at the eye centre and the arm's top end. **Face** opens "Detect
+  eyes and mouth" (`src/lib/FacePanel.svelte`, see "Face detection runtime"): the backend returns 478 MediaPipe
+  landmarks and `src/lib/faceParts.ts` (pure, tested) turns them into the eye contours (16 points each), the outer lip
+  contour as the mouth, both lips (outer arc plus the midline between the inner lip contours, so an open mouth in the
+  picture is split between them and together they cover the mouth) and the corners (landmarks 61 and 291). The parts
+  are added in one undo step with the default pivots and sampled eyelid colours; roles that already have a part keep
+  it (the note says which), and the note offers Undo while the detection is still the last step. Made for photos and
+  realistic paintings; see the runtime section for how it does on drawings. Roles: left/right eye, mouth, left/right arm, hand and leg (the
   character's own sides), head, body, each at most once, and any number of custom parts. Arm or leg parts make the
   character a full body figure, otherwise it is a portrait (shown as a badge). When an outline is closed it gets a
   pivot, the point it turns about, shown as a crosshair you can drag: arms, hands and legs start at the middle of their
@@ -151,10 +158,27 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   The preview has a Viseme menu and the Face warp slider, and Play demo cycles the mouth shapes. The preview (Preview
   menu) draws the character with the shared renderer: the base image within the mask, then each part cut from the
   image (part outline within the mask) and turned about its pivot, hands following their arm; sliders set mouth,
-  blink and each arm or leg angle (-60 to 60 degrees), Play demo animates them. There is no inpainting: the area a
-  moved part uncovers still shows the original image. Data: `parts[].pivot`, `parent`, `z`, optional `label` and
+  blink and each arm or leg angle (-60 to 60 degrees), Play demo animates them. **Under moved parts** (per character,
+  `rig.fill.mode`, `src/lib/fillUnder.ts`): arms, legs and everything attached to them (hands) move, so their
+  polygons (union, grown by 2 px for the anti-aliased edge; independent of the angle, since the swept area outside the
+  polygon is always covered by the moved part) are the area the base layer must not show as it is. Eyes and mouth do
+  not move and are untouched. `none` keeps the original pixels (as before), `transparent` cuts the area out,
+  `classic` fills it by push-pull pyramid interpolation of premultiplied RGBA (pixels outside the mask count as
+  transparent, so a hole at the outline fades out instead of smearing the old background in; smooth, no texture),
+  `ai` lays the stored LaMa colours over that classic fill (keeping its alpha). The base layer is computed once per
+  load into a cached texture (`baseLayer` in `rigRender.ts`; at most 2048 px on the long side, so full-size images in
+  the editor preview use a downscaled base): 1024 px synthetic figure about 45 ms (classic) / 22 ms (transparent),
+  2048 px about 240 ms, in the WebView on a Ryzen 7 7700X. Per frame nothing is added except that moving parts are
+  drawn at rest too (the base no longer shows them): one more blit per moving part. "Generate with AI"
+  (`src/lib/aiFill.ts`, `AiFillPanel.svelte`) crops a square around the area (plus half its size of context),
+  scales it to 512 px, masks the parts (grown by 4 px) and runs LaMa (see "AI fill runtime"); the result is stored
+  as `fill.png` with `fill.rect` (the image area it covers) and `fill.sig` (signature of the moving polygons: when the
+  parts change, the editor asks to generate again; until then the stored colours are used where they still apply
+  and the classic fill elsewhere). `fill.png` is written only on Save (`avatar_save_fill`, PNG checked, atomic),
+  deleted when a saved rig no longer references it, and goes with the character folder on delete. Data: `parts[].pivot`, `parent`, `z`, optional `label` and
   `lid`, plus `mouth.interior`, `mouth.color`, and `mouth.lipUpper`/`mouth.lipLower` (both or neither),
-  `mouth.corners` (two points) and `mouth.warp` (0..1) (format stays `version: 1`, older files load unchanged). Undo, redo,
+  `mouth.corners` (two points), `mouth.warp` (0..1) and `fill` (`mode`, optional `image`/`rect`/`sig`) (format stays
+  `version: 1`, older files load unchanged). Undo, redo,
   Ctrl+S, Esc and Revert work as in the mask editor. The avatar window animates the saved parts (see Avatar window).
 - **Extra voices**: on the Speech page, "Add model or voice from link" accepts a HuggingFace link (`/blob/` pages are turned into
   `/resolve/` links) or any direct URL to a `.pt`/`.npy`/`.npz`/`.bin` file of at most 50 MB. Files are stored in
@@ -233,14 +257,20 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   Vosk small models on demand from alphacephei.com (`vosk-model-small-de-0.15`, `vosk-model-small-en-us-0.15`, about
   45 MB each). The zip is downloaded with resume (max 150 MB), unpacked to a temp folder (entries escaping it are
   rejected, max 500 MB unpacked), checked for `am/final.mdl` and moved to `stt\<model>`. If the model for the chosen
-  language is missing, the mic button shows a hint instead of starting.
+  language is missing, the mic button shows a hint instead of starting. Each installed model shows its size on disk
+  and a trash button: after a confirmation that names the re-download size, `stt_remove_model` deletes it. The
+  language must be one of the two known models (the folder name never comes from the page), removal is refused while
+  speech input is listening with that model, and the folder is first renamed to `stt\.remove-<model>`, so a file held
+  open elsewhere fails the rename and leaves the model intact; a leftover is deleted on the next status refresh.
 - **Settings** (`settings.json` in the app config dir, `%APPDATA%\com.talkerbox.app`): Ollama path, last model, voice,
   TTS on/off and speed, speech input language, idle time and microphone, Ollama auto-start, avatar background,
   opacity, window bounds and selected character.
 
 Downloads, logs and models are stored in the local app data dir (`%LOCALAPPDATA%\com.talkerbox.app`): `gguf\` (temporary),
-`tts\`, `stt\`, `sam\` (smart select: `onnxruntime.dll` and the two MobileSAM `.onnx` files, about 64 MB;
-removable on the Avatar page), `avatars\` and `logs\sidecar.log`. Ollama's output is not written to disk: it is kept in memory for the terminal view.
+`tts\`, `stt\` (speech input models, removable on the Speech page), `sam\` (smart select: `onnxruntime.dll` and the two MobileSAM `.onnx` files, about 64 MB;
+removable on the Avatar page), `inpaint\` (the LaMa model for the AI fill, about 93 MB; removable in the part editor),
+`face\` (the two MediaPipe face models, about 5 MB; removable in the part editor),
+`avatars\` (each character's `rig.json`, image and optional `fill.png`) and `logs\sidecar.log`. Ollama's output is not written to disk: it is kept in memory for the terminal view.
 
 ## Prerequisites, development and release build
 
@@ -363,16 +393,96 @@ own download plus a CSP change for WebAssembly, multi-threading needs cross-orig
 single-threaded WASM is several times slower than the native CPU provider. Licences: ONNX Runtime MIT; MobileSAM
 Apache-2.0; the `Acly/MobileSAM` export repository is MIT.
 
+## AI fill runtime
+
+"Fill (AI)" uses LaMa (advimman/lama, Apache-2.0) as exported by the OpenCV Zoo: `inpainting_lama_2025jan.onnx` from
+`huggingface.co/opencv/inpainting_lama` (Apache-2.0), pinned to commit `aee6d22f`, 92,591,623 bytes, SHA-256
+`7df918ac3921d3daf0aae1d219776cf0dc4e4935f035af81841b40adcf74fdf2`. It is half the size of the `Carve/LaMa-ONNX`
+`lama_fp32.onnx` it was derived from (208 MB) with practically identical output (mean difference 0.02 of 255 on the
+test figures). Input `image` [1, 3, 512, 512] RGB 0..1 and `mask` [1, 1, 512, 512], output RGB 0..255.
+`inpaint_download` fetches it into `inpaint\` with the same pinned downloader as smart select and, if missing, the
+shared `onnxruntime.dll` into `sam\` (`sam::fetch_pinned`). `inpaint_run` loads the session in the process-wide ONNX
+Runtime environment (`sam::environment`), runs once and drops it, so nothing stays loaded. Measured on a Ryzen 7
+7700X: session load 6-9 s, inference 1.2-1.4 s per 512 px fill. `inpaint_remove` deletes only the model (the runtime
+belongs to smart select). Real-model check:
+
+```powershell
+$env:TALKERBOX_SAM_DIR = "$env:LOCALAPPDATA\com.talkerbox.app\sam"; $env:TALKERBOX_LAMA_DIR = "$env:LOCALAPPDATA\com.talkerbox.app\inpaint"
+cargo test --release lama_real -- --ignored --nocapture
+```
+
+## Face detection runtime
+
+"Detect eyes and mouth" in the part editor (`src-tauri/src/face.rs`) runs two Google MediaPipe models (Apache-2.0 per
+their model cards) as ONNX conversions from Hugging Face (Apache-2.0), each pinned to a commit with size and SHA-256:
+
+- `face_detector.onnx`, BlazeFace short range, from `fernandotonon/QtMeshEditor-blazeface-onnx` at `50f2c66f`,
+  418,437 bytes, `02a04d5d37c3558dc4d5274f7f8f0f0f01ac94e46c5ffb2cee82395d47e23181`. Input [1, 128, 128, 3] RGB -1..1,
+  outputs 896 anchors (box and 6 keypoints, score logit).
+- `face_landmarks.onnx`, Face Mesh V2, from `fernandotonon/QtMeshEditor-facemesh-onnx` at `32714088`, 4,920,979
+  bytes, `d16e5a55e6a480284d468ee32469692464049518c311662ab3956681de31e3e9`. Input [1, 256, 256, 3] RGB 0..1 (the
+  face crop), outputs 478 x (x, y, z) in crop pixels and a face presence logit.
+
+`face_download` fetches both into `face\` (and the shared `onnxruntime.dll` into `sam\` if missing); `face_remove`
+deletes only the models. `face_detect` gets the image as raw RGBA (long side 1024), loads both sessions in the shared
+environment (`sam::environment`), and drops them after the call. The short-range detector wants a face that fills a
+good part of its 128 px input, so it runs on the whole image (letterboxed) and on half-overlapping square windows of
+half the size each step down to a quarter of the short side; the three best detections (score at least 0.5) are
+tried in order: each is cropped as MediaPipe does (square, 1.5 times the box, rotated so the eyes are level, bilinear)
+and the first with a face presence of at least 0.5 is returned, otherwise "No face found". The windows, anchor
+decoding, crop and back-projection are pure and tested.
+
+Measured (Ryzen 7 7700X, release, images scaled to a long side of 1024 as the editor sends them; test pictures from
+Wikimedia Commons, public domain or CC0, not in the repository): 90-170 ms per click including loading both models.
+On a photo portrait, two full-body photos (one with the head tilted and laughing) and a realistic painting every
+face was found and the eye and lip contours sit on the visible edges (checked by eye at 3x zoom: within a few pixels,
+about 2 % of the eye distance, on a 1280 px portrait). On drawings it is unreliable: a flat cartoon face with human proportions is
+found with eye and mouth positions within 1-3 % of the face width, but the eyes come out at a third of their drawn
+height (Face Mesh forces human proportions), and on a figure without a drawn mouth a mouth is placed where one would
+be; a semi-realistic anime portrait works; a classic big-eyed anime face and a caricature in three-quarter view are
+rejected by the presence check ("No face found"); a small chibi figure is found with flattened eyes. Pick remains the
+tool for cartoons. Real-model check (binary PPM images, `<image>.json` with the landmarks is written beside each):
+
+```powershell
+$env:TALKERBOX_SAM_DIR = "$env:LOCALAPPDATA\com.talkerbox.app\sam"; $env:TALKERBOX_FACE_DIR = "$env:LOCALAPPDATA\com.talkerbox.app\face"
+$env:TALKERBOX_FACE_IMAGES = 'C:\pics\a.ppm;C:\pics\b.ppm'
+cargo test --release face_real -- --ignored --nocapture
+```
+
+Pose keypoints for full-body figures (study option 3a) were evaluated and not built: MoveNet SinglePose Thunder
+(Apache-2.0, 25 MB ONNX, 10-30 ms) placed all 17 joints correctly on two full-body photos but failed on drawings (all
+joints below 0.2 confidence on a flat cartoon figure, arms misplaced on a cartoon in a wheelchair), and Pick plus the
+default pivots already cover limbs in every art style.
+
 ## Security notes
 
 - All HTTP (Ollama, sidecar, downloads) runs in Rust. The webview's CSP allows only `'self'` and Tauri IPC.
-- Capabilities: `core:default`, plus `dialog:allow-open` and `dialog:allow-ask` for the main window; the avatar
-  window gets only `core:event:default`. No shell or filesystem plugin permissions are granted to the webview.
-  Processes are spawned only by fixed Rust commands. Character files are only read and written under `avatars\<id>`
+- Window permissions: see below. No shell or filesystem plugin permissions are granted to any webview. Processes are spawned only by fixed Rust commands. Character files are only read and written under `avatars\<id>`
   with ids checked in Rust; the image path from the open dialog is only read and copied.
 - Download URLs must be http(s). Local file names are sanitised to `[A-Za-z0-9._-]`.
 - Smart select downloads only fixed URLs, each checked against a pinned size and SHA-256 before use; the DLL is
   loaded from the app data dir by absolute path.
+- `withGlobalTauri` is off (the API comes from the bundled `@tauri-apps/api`), no capability has `remote` URLs, so
+  only the app's own pages can use IPC, and the asset protocol is not enabled.
+
+### Window permissions
+
+`build.rs` passes an app manifest to `tauri_build` with every command from `generate_handler!` in `src/lib.rs`
+(parsed from the source, so the lists cannot drift). That makes each app command a permission (`allow-<command>`,
+generated into `permissions/autogenerated/`, not in git), and Tauri then rejects any app command a window was not
+granted ("Command ... not allowed by ACL"). `build.rs` also writes `permissions/main-window.toml`, a set of all of
+them.
+
+- `capabilities/default.json`, window `main`: `main-window` (every app command), `core:default`,
+  `dialog:allow-open`, `dialog:allow-ask`.
+- `capabilities/puppet.json`, window `puppet`: only what `puppet.html` and its imports call: `allow-avatar-load`,
+  `allow-avatar-image`, `allow-avatar-fill` (show the selected character and its stored AI fill),
+  `allow-puppet-ready` (tells the main window it is ready; the backend emits `avatar://ready`, so the page needs no
+  emit permission) and `core:event:allow-listen` / `allow-unlisten` for the `avatar://` events. It cannot call any other app command, emit events, or use window,
+  app, path, webview or dialog APIs.
+
+A new command needs no permission work for the main window; if the avatar window needs it, add its `allow-` entry
+to `puppet.json`.
 
 ## Layout
 
@@ -395,5 +505,6 @@ src-tauri/src/
   avatar.rs          avatar window: open/close, transparency, saved bounds (unit-tested)
   rig.rs             avatar characters: rig.json model, validation, image import (unit-tested)
   sam.rs             smart select: pinned downloads, ONNX Runtime + MobileSAM encoder/decoder (unit-tested)
+  inpaint.rs         AI fill under moved parts: LaMa download and one-shot inference (unit-tested)
   config.rs          settings.json
 ```

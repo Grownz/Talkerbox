@@ -2,8 +2,10 @@ mod avatar;
 mod config;
 mod discovery;
 mod download;
+mod face;
 mod featured;
 mod hf;
+mod inpaint;
 mod names;
 mod ollama;
 mod packs;
@@ -938,6 +940,8 @@ struct SttModelView {
     lang: &'static str,
     name: &'static str,
     installed: bool,
+    /// Bytes on disk of the installed model folder.
+    bytes: u64,
 }
 
 #[derive(Serialize)]
@@ -952,11 +956,30 @@ struct SttStatus {
 #[tauri::command]
 fn stt_status(app: AppHandle, state: State<'_, AppState>) -> Res<SttStatus> {
     let dir = stt_dir(&app)?;
+    stt::clean_stale(&dir);
     Ok(SttStatus {
         runtime_error: stt::runtime_error(),
         listening: state.stt.lock().unwrap().as_ref().is_some_and(|l| l.running()),
-        models: stt::MODELS.iter().map(|&(lang, name)| SttModelView { lang, name, installed: stt::installed(&dir.join(name)) }).collect(),
+        models: stt::MODELS
+            .iter()
+            .map(|&(lang, name)| {
+                let installed = stt::installed(&dir.join(name));
+                SttModelView { lang, name, installed, bytes: if installed { stt::disk_size(&dir.join(name)) } else { 0 } }
+            })
+            .collect(),
     })
+}
+
+/// Deletes the installed Vosk model for `lang` (only names from the known model list, inside `stt\`).
+/// Refused while speech input is listening with that model; stop the microphone first.
+#[tauri::command]
+async fn stt_remove_model(app: AppHandle, state: State<'_, AppState>, lang: String) -> Res<()> {
+    let name = stt::model_name(&lang)?;
+    let root = stt_dir(&app)?;
+    if state.stt.lock().unwrap().as_ref().is_some_and(|l| l.uses(&root.join(name))) {
+        return Err("Speech input is listening with this model; stop the microphone in the chat first".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || stt::remove_model(&root, name)).await.map_err(|e| e.to_string())?
 }
 
 /// Downloads (resumable) and unpacks the Vosk model for `lang` into `stt/<model>` of the app data dir.
@@ -1084,30 +1107,9 @@ async fn sam_download(app: AppHandle, state: State<'_, AppState>, id: String, on
     sam::clean_stale(&dir);
     let op = state.op(&id);
     for (a, label) in [(&sam::RUNTIME_WHEEL, "Runtime"), (&sam::ENCODER, "Image encoder"), (&sam::DECODER, "Mask decoder")] {
-        let dest = dir.join(a.file);
-        let runtime = std::ptr::eq(a, &sam::RUNTIME_WHEEL);
-        let have = if runtime { dir.join(sam::RUNTIME_DLL).is_file() } else { std::fs::metadata(&dest).is_ok_and(|m| m.len() == a.size) };
-        if have {
-            continue;
-        }
-        let url = reqwest::Url::parse(a.url).map_err(|e| e.to_string())?;
-        let on = |p: Progress| send(&on_progress, Progress { message: format!("{label}: {}", p.message), ..p });
-        if download::download(&state.http, url, &dest, Some(a.size), &op.notify, on).await? {
+        if sam::fetch_pinned(&state.http, &op.notify, &dir, a, label, &on_progress).await? {
             return Ok(true);
         }
-        send(&on_progress, Progress { message: format!("{label}: checking"), completed: None, total: None });
-        let d = dir.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            sam::verify(&dest, a)?;
-            if runtime {
-                let r = sam::extract_runtime(&dest, &d);
-                let _ = std::fs::remove_file(&dest);
-                r?;
-            }
-            Ok::<_, String>(())
-        })
-        .await
-        .map_err(|e| e.to_string())??;
     }
     Ok(false)
 }
@@ -1218,14 +1220,24 @@ pub fn run() {
             stt_start,
             stt_mute,
             stt_stop,
+            stt_remove_model,
             sam_status,
             sam_download,
             sam_remove,
             sam_encode,
             sam_decode,
             sam_release,
+            inpaint::inpaint_status,
+            inpaint::inpaint_download,
+            inpaint::inpaint_remove,
+            inpaint::inpaint_run,
+            face::face_status,
+            face::face_download,
+            face::face_remove,
+            face::face_detect,
             avatar::puppet_open,
             avatar::puppet_close,
+            avatar::puppet_ready,
             rig::avatar_list,
             rig::avatar_import_image,
             rig::avatar_load,
@@ -1233,6 +1245,8 @@ pub fn run() {
             rig::avatar_rename,
             rig::avatar_delete,
             rig::avatar_image,
+            rig::avatar_fill,
+            rig::avatar_save_fill,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Talkerbox");

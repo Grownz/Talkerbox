@@ -128,3 +128,20 @@ test('mask outline prefers the baked smoothed points', () => {
   assert.deepEqual(maskOutline(rig({ mask: { points: tri, smoothed: [] } })), tri)
   assert.equal(validateRig(rig({ mask: { points: tri, smoothed: sm, smooth: 0.5, snap: 1 } })), null)
 })
+
+test('background fill under moved parts is checked like in Rust', () => {
+  const ai = { mode: 'ai' as const, image: 'fill.png' as const, rect: [0.1, 0.2, 0.5, 0.9] as [number, number, number, number], sig: '0a1b2c3d' }
+  assert.equal(validateRig(rig({ fill: { mode: 'transparent' } })), null)
+  assert.equal(validateRig(rig({ fill: { mode: 'ai' } })), null, 'AI without a result yet: the classic fill is shown')
+  assert.equal(validateRig(rig({ fill: ai })), null)
+  for (const bad of [
+    { mode: 'blur' },
+    { ...ai, image: '../x.png' },
+    { ...ai, rect: undefined },
+    { ...ai, image: undefined },
+    { ...ai, rect: [0.5, 0.2, 0.1, 0.9] },
+    { ...ai, rect: [0, 0, 1, Number.NaN] },
+    { ...ai, sig: 'not hex!' },
+  ])
+    assert.notEqual(validateRig(rig({ fill: bad as Rig['fill'] })), null, JSON.stringify(bad))
+})

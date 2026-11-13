@@ -3,6 +3,36 @@
 All notable changes to Talkerbox. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behaviour).
 
+## [Unreleased]
+
+## [0.5.0] - 2026-11-13
+
+### Added
+- **Remove speech input models**: each installed Vosk model on the Speech page shows its size on disk and has a
+  delete button (with a confirmation that names the re-download size). Removal is refused while speech input is
+  listening with that model.
+- **Background under moved parts**: per character, choose what shows where an arm, hand or leg was before it moved:
+  the original picture, transparent, a smooth classic fill, or an AI fill (LaMa, offline after a one-time download of
+  about 93 MB, generated once in the part editor and saved with the character). Arms crossing the body no longer leave
+  a copy behind.
+- **Detect face parts**: "Face" in the part editor finds both eyes and the mouth with its upper and lower lip and the
+  mouth corners in one click (MediaPipe face landmarks, offline after a one-time download of about 5 MB, removable).
+  The parts are added as one undo step and can be adjusted like drawn ones; parts you already have are kept. Made for
+  photos and realistic paintings; on cartoons the face is often not found or the eyes come out too flat (use Pick).
+- **Third-party notices**: `THIRD_PARTY_NOTICES.md` lists every bundled and downloadable third-party component with
+  its licence and copyright holder, includes the required licence texts and explains the GPL status of the TTS
+  sidecar. The installer places it next to `talkerbox.exe`.
+
+### Fixed
+- Build guide: the sidecar exe is about 38 MB (not 48 MB); `npm ci` is its own step before the dev run and the
+  build; notes that `tauri dev` needs port 1420, that `cargo test` prints one harmless LNK4199 warning, and that
+  the build downloads packages but no model or voice files.
+
+### Security
+- The avatar window may now only call the commands it needs (load a character, read its image and fill, report ready)
+  and listen for events; every other app command, event emitting and window or plugin API is rejected for it. The
+  main window keeps access to all app commands.
+
 ## [0.4.0] - 2026-11-13
 
 ### Added
@@ -79,6 +109,8 @@ First early release.
 - The speech engine only accepts local requests (local Host header, JSON content type) and rejects oversized or
   malformed voice files.
 
+[Unreleased]: https://github.com/Grownz/Talkerbox/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Grownz/Talkerbox/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Grownz/Talkerbox/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Grownz/Talkerbox/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Grownz/Talkerbox/compare/v0.1.0...v0.2.0

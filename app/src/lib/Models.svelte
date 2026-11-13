@@ -47,6 +47,25 @@
     await loadStt()
   }
 
+  async function removeStt(l: (typeof STT_LANGUAGES)[number], bytes: number) {
+    const ok = await ask(`Delete the ${l.name} speech input model (${formatBytes(bytes)})? Using it again needs a new download of about ${l.size}.`, {
+      title: 'Remove speech input model',
+      kind: 'warning',
+      okLabel: 'Remove',
+      cancelLabel: 'Keep',
+    })
+    if (!ok) return
+    sttJob.result = ''
+    sttJob.error = ''
+    try {
+      await api.sttRemoveModel(l.code)
+      sttJob.result = `${l.name} speech input model removed.`
+    } catch (e) {
+      sttJob.error = errText(e)
+    }
+    await loadStt()
+  }
+
   let models = $state<ModelInfo[]>([])
   let listError = $state('')
   let pullInput = $state('')
@@ -424,7 +443,9 @@
           <span class="ic"><Icon name="mic" /></span>
           <span class="txt"><span class="n">{l.name}</span><span class="s mono">{m?.name ?? ''}</span></span>
           {#if m?.installed}
+            <span class="size">{formatBytes(m.bytes)}</span>
             <span class="badge ok" title="Model installed"><Icon name="check" />Installed</span>
+            <button type="button" class="icon-only ghost danger" title={sttJob.busy ? 'Wait for the download to finish' : `Delete the ${l.name} speech input model (asks for confirmation)`} aria-label={`Delete ${l.name} speech input model`} disabled={sttJob.busy} onclick={() => removeStt(l, m.bytes)}><Icon name="trash" /></button>
           {:else if sttJob.busy && sttJobLang === l.code}
             <Btn icon="x" label="Cancel" title="Stop; the partial download resumes next time" onclick={() => sttJob.cancel()} />
           {:else}

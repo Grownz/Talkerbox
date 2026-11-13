@@ -73,8 +73,15 @@ spoken replies:
   cut it out). It runs on the CPU, offline, after a one-time download of about 60 MB.
 - **Part editor**: mark the parts that move: eyes, mouth, lips, arms, hands, legs, head, body or custom parts, each
   with a pivot to turn about. Draw each outline by hand or press **Pick**, choose the role and click the part:
-  Smart select outlines it and the part gets a sensible pivot (shoulder, wrist, hip, or the centre). A preview with
-  sliders and a demo animation shows the result before you save.
+  Smart select outlines it and the part gets a sensible pivot (shoulder, wrist, hip, or the centre). For photos and
+  realistic paintings, **Face** finds both eyes and the mouth with its lips in one click (MediaPipe face landmarks,
+  about 5 MB download); on cartoons the face is often not found or the eyes come out too flat, so use Pick there. A
+  preview with sliders and a demo animation shows the result before you save.
+- **Background under moved parts**: when an arm swings away, the picture still holds the arm where it was. Choose
+  per character what shows there instead: the original picture, transparent (cut out), a smooth classic fill from the
+  surroundings, or a fill painted by an AI model (LaMa) that continues patterns and backgrounds. Arms in front of the
+  body then look right. The AI fill is generated once in the part editor (about 10 s) and saved with the character;
+  its model is a one-time download of about 93 MB.
 
 ### Downloads and how to remove them
 Nothing large is bundled: you download what you use, and everything stays in
@@ -84,8 +91,10 @@ Nothing large is bundled: you download what you use, and everything stays in
 |---|---|---|---|
 | Kokoro voices (spoken replies) | about 350 MB | Speech page | "Delete files" on the Speech page |
 | Language packs and extra voices | 1-330 MB each | Speech page | "Delete pack" / delete button on the Speech page |
-| Speech input model (German or English) | about 45 MB each | Speech page | delete the folder `stt\<model>` in the data folder |
+| Speech input model (German or English) | about 45 MB each | Speech page | trash button next to the model on the Speech page |
 | Smart select (MobileSAM + ONNX Runtime) | about 60 MB | mask editor or part editor | "Remove model…" on the Avatar page or the trash button in the Smart select bar |
+| AI fill under moved parts (LaMa) | about 93 MB (plus 15 MB runtime if Smart select is not installed) | part editor, "Fill (AI)" | trash button next to "Generate with AI" |
+| Face detection (MediaPipe face detector + landmarks) | about 5 MB (plus 15 MB runtime if Smart select is not installed) | part editor, "Face" | trash button next to "Detect eyes and mouth" |
 | Chat models | varies | Models page (through Ollama) | delete button on the Models page |
 
 Settings are stored in `%APPDATA%\com.talkerbox.app\settings.json`.
@@ -109,7 +118,8 @@ the Microsoft Visual C++ Redistributable (x64), which most PCs already have.
 
 ## Build from source
 
-All commands are PowerShell, run from the repository root unless a step says otherwise.
+All commands are PowerShell, run from the repository root unless a step says otherwise. The build downloads packages
+from PyPI, npm and crates.io; it needs no model or voice files.
 
 ### Prerequisites
 
@@ -132,7 +142,7 @@ Copy-Item tts-sidecar\dist\tts-sidecar-x86_64-pc-windows-msvc.exe app\src-tauri\
 ```
 
 `build.ps1` creates `tts-sidecar\.venv` with the default `py -3` interpreter, installs `requirements-dev.txt`
-(kokoro-onnx, PyInstaller, pytest) and writes a single-file exe of about 48 MB to `tts-sidecar\dist\`. Tauri bundles
+(kokoro-onnx, PyInstaller, pytest) and writes a single-file exe of about 38 MB to `tts-sidecar\dist\`. Tauri bundles
 `app\src-tauri\binaries\tts-sidecar-x86_64-pc-windows-msvc.exe`, so that file must exist. To build without spoken
 replies, create an empty placeholder instead; the app then reports speech as unavailable:
 
@@ -155,17 +165,26 @@ app\src-tauri\vosk\setup.ps1 -From "$env:TEMP\vosk-venv\Lib\site-packages\vosk"
 
 It ends with `Vosk runtime ready in ... (<n> exports)`. The venv is only needed for this step and can be deleted.
 
-### 3. Run in development mode
+### 3. Install the frontend dependencies (once, and whenever `package-lock.json` changes)
 
 ```powershell
 cd app
 npm ci
+```
+
+All later steps need `app\node_modules`.
+
+### 4. Run in development mode
+
+```powershell
+cd app
 npm run tauri dev
 ```
 
-This starts the Vite dev server on port 1420 and the Rust app with hot reload for the frontend.
+This starts the Vite dev server on port 1420 (the port must be free) and the Rust app with hot reload for the
+frontend.
 
-### 4. Build the release installer
+### 5. Build the release installer
 
 ```powershell
 cd app
@@ -175,7 +194,7 @@ npm run tauri build
 The installer is written to `app\src-tauri\target\release\bundle\nsis\Talkerbox_<version>_x64-setup.exe` (NSIS, per-user
 install, LZMA-compressed); the plain exe is `app\src-tauri\target\release\talkerbox.exe`.
 
-### 5. Quality checks
+### 6. Quality checks
 
 ```powershell
 cd app
@@ -187,7 +206,11 @@ cargo clippy --all-targets                      # lints (must be warning-free)
 cargo test                                      # Rust unit tests
 ```
 
-Optional end-to-end checks with real models (Vosk with a WAV file, Smart select with the downloaded model) are
+`cargo test` prints one linker warning `LNK4199: /DELAYLOAD:libvosk.dll ignored` for the binary's test target; it is
+harmless.
+
+Optional end-to-end checks with real models (Vosk with a WAV file, Smart select, AI fill and face detection with the
+downloaded models) are
 described in [app/README.md](app/README.md). The sidecar has its own pytest suite, see
 [tts-sidecar/README.md](tts-sidecar/README.md).
 
@@ -222,12 +245,20 @@ described in [app/README.md](app/README.md). The sidecar has its own pytest suit
 
 ## Third-party notices
 
-The installer ships the Vosk runtime (`libvosk.dll`, Apache-2.0) with MinGW runtime DLLs: `libstdc++-6.dll` and
+The full list with versions, copyright holders and licence texts is in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); the installer places a copy next to `talkerbox.exe`. In short:
+the installer ships the Vosk runtime (`libvosk.dll`, Apache-2.0) with MinGW runtime DLLs: `libstdc++-6.dll` and
 `libgcc_s_seh-1.dll` (GPL-3.0 with the GCC Runtime Library Exception) and `libwinpthread-1.dll` (MIT-style licence),
-and the TTS sidecar built from kokoro-onnx (MIT) with espeak-ng (GPL-3.0) and ONNX Runtime (MIT).
+and the TTS sidecar, a separate program the app talks to over local HTTP. The sidecar is a PyInstaller one-file
+executable (bootloader GPL-2.0-or-later with the PyInstaller exception) built from kokoro-onnx (MIT), ONNX Runtime
+(MIT), NumPy (BSD-3-Clause) and the Python runtime (PSF-2.0) with espeak-ng (GPL-3.0-or-later) and phonemizer
+(GPL-3.0-or-later), so the sidecar is distributed under the GPL-3.0; the app itself stays MIT.
 Downloaded on demand, not bundled: the Kokoro model and voices (Apache-2.0), the Vosk small models (Apache-2.0), and for
 Smart select ONNX Runtime 1.31.1 (`onnxruntime.dll`, MIT) and the MobileSAM ONNX export from `Acly/MobileSAM` on
-Hugging Face (MobileSAM weights and the Segment Anything mask decoder Apache-2.0, export repository MIT). Flags from
+Hugging Face (MobileSAM weights and the Segment Anything mask decoder Apache-2.0, export repository MIT), and for the
+AI fill the LaMa inpainting model (Apache-2.0) as exported by the OpenCV Zoo (`opencv/inpainting_lama`, Apache-2.0),
+and for face detection the MediaPipe BlazeFace and Face Mesh V2 models (Apache-2.0) as ONNX conversions from the
+`fernandotonon/QtMeshEditor-blazeface-onnx` and `-facemesh-onnx` repositories on Hugging Face (Apache-2.0). Flags from
 [flag-icons](https://github.com/lipis/flag-icons) (MIT).
 
 ## Security

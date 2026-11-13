@@ -48,6 +48,13 @@ pub fn puppet_close(app: AppHandle) -> Result<(), String> {
     }
 }
 
+/// Called by the puppet page once its listeners are registered: tells the main window to send the options.
+/// A command instead of a page-side `emitTo`, so the puppet window needs no permission to emit arbitrary events.
+#[tauri::command]
+pub fn puppet_ready(app: AppHandle) -> Result<(), String> {
+    app.emit_to("main", "avatar://ready", ()).map_err(|e| e.to_string())
+}
+
 fn build(app: &AppHandle, transparent: bool) -> Result<(), String> {
     let mut b = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("puppet.html".into()))
         .title("Talkerbox Avatar")

@@ -1,6 +1,6 @@
 [package]
 name = "talkerbox"
-version = "0.4.0"
+version = "0.5.0"
 description = "Talkerbox: local chatbot with spoken replies (Ollama + TTS sidecar)"
 edition = "2021"
 

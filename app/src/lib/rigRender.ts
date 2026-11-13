@@ -1,6 +1,8 @@
 // Canvas renderer for a rigged character (part editor preview and avatar window) and its pure maths.
 // Parts are cut from the source image (part polygon within the mask) and drawn transformed about their pivots on top
-// of the unmoved base image. shortcut: no inpainting, the area a moved part uncovers keeps the original pixels.
+// of the base image. With `rig.fill` the area moving parts uncover is cut out or filled in the base layer, which is
+// computed once per load (`baseLayer`); with mode `none` it keeps the original pixels.
+import { applyFill, dilate, fillPolygons, movingParts, overlayColours, rasterize } from './fillUnder.ts'
 import { resample } from './maskGeometry.ts'
 import { faceMesh, faceOutline, gapPolygon, grow, lipMesh, mouthGeometry, mouthMotion, triAffine, type Mesh, type MouthGeo, type Motion } from './mouthWarp.ts'
 import { DEFAULT_WARP, maskOutline, type PartRole, type Point, type Rig, type RigPart } from './rig.ts'
@@ -264,8 +266,49 @@ function drawLips(ctx: CanvasRenderingContext2D, t: MouthTex, motion: Motion, co
   drawMesh(ctx, t.upper, lipMesh(t.geo, motion, 'upper'))
 }
 
+// Base layers with the fill applied, computed once per source image, size, fill and geometry.
+const baseCache = new WeakMap<object, { key: string; fillImage: CanvasImageSource | null; canvas: HTMLCanvasElement | null }>()
+
+/**
+ * The base layer (image within the mask) with the area under moving parts cut out or filled per `rig.fill`, for a
+ * w*h drawing (computed at most 2048 px on the long side; draw it scaled to w*h); null when nothing changes (mode `none` or no moving part). The AI image (`fillImage`, covering `rig.fill.rect`)
+ * colours the classic fill; without it mode `ai` falls back to the classic fill.
+ */
+export function baseLayer(rig: Rig, src: CanvasImageSource, w: number, h: number, fillImage?: CanvasImageSource | null): HTMLCanvasElement | null {
+  const mode = rig.fill?.mode ?? 'none'
+  const polys = mode === 'none' ? [] : fillPolygons(rig.parts)
+  if (!polys.length) return null
+  const outline = maskOutline(rig)
+  const key = JSON.stringify([mode, rig.fill?.rect, polys, outline, w, h])
+  const hit = baseCache.get(src as object)
+  const img = mode === 'ai' && rig.fill?.rect ? (fillImage ?? null) : null
+  if (hit && hit.key === key && hit.fillImage === img) return hit.canvas
+  // shortcut: the editor draws full-size images (up to 8192 px); the fill is computed at 2048 px at most there.
+  const s = Math.min(1, 2048 / Math.max(w, h))
+  ;[w, h] = [Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s))]
+  const c = cut(src, w, h, 0, 0, w, h, outline ? [outline] : [])
+  const g = c.getContext('2d', { willReadFrequently: true })!
+  const data = g.getImageData(0, 0, w, h)
+  // Grown by 2 px so the fill also covers the anti-aliased edge of the parts drawn over it.
+  const hole = dilate(rasterize(polys, w, h), w, h, 2)
+  applyFill(data.data, hole, w, h, mode === 'ai' ? 'classic' : mode)
+  if (img && rig.fill?.rect) {
+    const [x0, y0, x1, y1] = rig.fill.rect
+    const t = document.createElement('canvas')
+    t.width = w
+    t.height = h
+    const tg = t.getContext('2d', { willReadFrequently: true })!
+    tg.imageSmoothingQuality = 'high'
+    tg.drawImage(img, x0 * w, y0 * h, (x1 - x0) * w, (y1 - y0) * h)
+    overlayColours(data.data, tg.getImageData(0, 0, w, h).data, hole)
+  }
+  g.putImageData(data, 0, 0)
+  baseCache.set(src as object, { key, fillImage: img, canvas: c })
+  return c
+}
+
 /** Cuts the textures for `drawRig` once per rig load, so each frame only transforms and blits (avatar window). */
-export function rigSprites(rig: Rig, src: CanvasImageSource, w: number, h: number): RigSprites {
+export function rigSprites(rig: Rig, src: CanvasImageSource, w: number, h: number, fillImage?: CanvasImageSource | null): RigSprites {
   const outline = maskOutline(rig)
   const layer = (x: number, y: number, cw: number, ch: number, clip: Point[][], fill?: string) => cut(src, w, h, x, y, cw, ch, clip, fill)
   const parts: RigSprites['parts'] = new Map()
@@ -278,7 +321,7 @@ export function rigSprites(rig: Rig, src: CanvasImageSource, w: number, h: numbe
     const clip = outline ? [outline, p.polygon] : [p.polygon]
     parts.set(p.id, { img: layer(x, y, cw, ch, clip), x, y, lid: isEye(p.role) ? layer(x, y, cw, ch, clip, p.lid ?? DEFAULT_LID) : undefined })
   }
-  return { base: layer(0, 0, w, h, outline ? [outline] : []), parts }
+  return { base: baseLayer(rig, src, w, h, fillImage) ?? layer(0, 0, w, h, outline ? [outline] : []), parts }
 }
 
 /**
@@ -286,8 +329,18 @@ export function rigSprites(rig: Rig, src: CanvasImageSource, w: number, h: numbe
  * Order: base image within the mask, then every part by z: eyes squashed over their lid colour, the mouth's open area,
  * moved limbs as textures cut from the source. Sway turns everything about the bottom centre.
  * With `sprites` (from `rigSprites` at the same w*h) the textures are blitted instead of clipped from `src`.
+ * `fillImage`: the AI fill image for `rig.fill` (editor preview; the sprites already contain it).
  */
-export function drawRig(ctx: CanvasRenderingContext2D, rig: Rig, src: CanvasImageSource, w: number, h: number, pose: Pose, sprites?: RigSprites) {
+export function drawRig(
+  ctx: CanvasRenderingContext2D,
+  rig: Rig,
+  src: CanvasImageSource,
+  w: number,
+  h: number,
+  pose: Pose,
+  sprites?: RigSprites,
+  fillImage?: CanvasImageSource | null,
+) {
   const outline = maskOutline(rig)
   const path = (pts: Point[]) => trace(ctx, pts, w, h)
   const sway = rotateAbout(pose.sway, [w / 2, h])
@@ -306,7 +359,9 @@ export function drawRig(ctx: CanvasRenderingContext2D, rig: Rig, src: CanvasImag
     ctx.closePath()
     ctx.clip('evenodd')
   }
-  if (sprites) ctx.drawImage(sprites.base, 0, 0)
+  const filled = sprites ? null : baseLayer(rig, src, w, h, fillImage)
+  if (sprites) ctx.drawImage(sprites.base, 0, 0, w, h)
+  else if (filled) ctx.drawImage(filled, 0, 0, w, h)
   else {
     if (outline) {
       path(outline)
@@ -321,11 +376,13 @@ export function drawRig(ctx: CanvasRenderingContext2D, rig: Rig, src: CanvasImag
     drawLips(ctx, lips, motion, rig.mouth?.color ?? DEFAULT_MOUTH)
     ctx.restore()
   }
+  // With a fill the base no longer shows the moving parts, so they are drawn even at rest.
+  const always = (rig.fill?.mode ?? 'none') !== 'none' ? movingParts(rig.parts) : null
   for (const p of [...rig.parts].sort((a, b) => a.z - b.z)) {
     const m = partMatrix(rig.parts, p, pose, w, h)
     const eye = isEye(p.role) && pose.blink > 0
     const mouth = p.role === 'mouth' && !lips ? mouthOpenPolygon(rig, pose.mouth, pose.wide) : null
-    if (!eye && !mouth && isIdentity(m)) continue // unmoved: the base image already shows it
+    if (!eye && !mouth && isIdentity(m) && !always?.has(p.id)) continue // unmoved: the base image already shows it
     const sp = sprites?.parts.get(p.id)
     const texture = () => (sp ? ctx.drawImage(sp.img, sp.x, sp.y) : ctx.drawImage(src, 0, 0, w, h))
     ctx.save()

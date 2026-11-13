@@ -1,7 +1,7 @@
 # Builds dist\tts-sidecar.exe (single file) plus the Tauri sidecar copy
 # dist\tts-sidecar-x86_64-pc-windows-msvc.exe. Run from any directory.
 $ErrorActionPreference = "Stop"
-Set-Location $PSScriptRoot
+Push-Location $PSScriptRoot
 
 $py = ".venv\Scripts\python.exe"
 if (-not (Test-Path $py)) {
@@ -35,3 +35,5 @@ if ($LASTEXITCODE) { throw "PyInstaller failed" }
 
 Copy-Item dist\tts-sidecar.exe dist\tts-sidecar-x86_64-pc-windows-msvc.exe -Force
 Get-Item dist\*.exe | ForEach-Object { "{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }
+
+Pop-Location
