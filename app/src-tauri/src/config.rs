@@ -26,6 +26,14 @@ pub struct Settings {
     pub stt_device: Option<String>,
     /// Start `ollama serve` when the app opens.
     pub ollama_autostart: bool,
+    /// Avatar window background: "normal", "green" or "transparent".
+    pub avatar_bg: String,
+    /// Avatar opacity 0-100: background alpha in transparent mode, figure opacity otherwise.
+    pub avatar_opacity: u32,
+    /// Avatar window position and inner size in logical px [x, y, w, h]; owned by the backend.
+    pub avatar_bounds: Option<[f64; 4]>,
+    /// Id of the character shown in the avatar window; None = built-in demo figure.
+    pub avatar_active: Option<String>,
 }
 
 impl Default for Settings {
@@ -42,7 +50,10 @@ impl Default for Settings {
             stt_idle_secs: 5,
             stt_device: None,
             ollama_autostart: true,
-
+            avatar_bg: "normal".into(),
+            avatar_opacity: 100,
+            avatar_bounds: None,
+            avatar_active: None,
         }
     }
 }
@@ -66,6 +77,7 @@ pub fn save_from_ui(app: &AppHandle, ui: Settings) -> Result<(), String> {
             ollama_path: s.ollama_path.take(),
             tts_model_dir: s.tts_model_dir.take(),
             display_names: std::mem::take(&mut s.display_names),
+            avatar_bounds: s.avatar_bounds.take(),
             ..ui
         }
     })
@@ -86,11 +98,14 @@ fn save(app: &AppHandle, s: &Settings) -> Result<(), String> {
     write_atomic(&f, &serde_json::to_vec_pretty(s).map_err(|e| e.to_string())?)
 }
 
-fn write_atomic(f: &Path, bytes: &[u8]) -> Result<(), String> {
+/// Writes `bytes` to a temp file next to `f`, then renames it over `f`, so readers never see half a file.
+pub fn write_atomic(f: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(dir) = f.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
     }
-    let tmp = f.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes).map_err(|e| format!("Cannot write settings: {e}"))?;
-    std::fs::rename(&tmp, f).map_err(|e| format!("Cannot write settings: {e}"))
+    let mut tmp = f.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let err = |e: std::io::Error| format!("Cannot write {}: {e}", f.display());
+    std::fs::write(&tmp, bytes).map_err(err)?;
+    std::fs::rename(&tmp, f).map_err(err)
 }

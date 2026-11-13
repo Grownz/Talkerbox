@@ -1,6 +1,6 @@
 [package]
 name = "talkerbox"
-version = "0.3.0"
+version = "0.4.0"
 description = "Talkerbox: local chatbot with spoken replies (Ollama + TTS sidecar)"
 edition = "2021"
 
@@ -27,6 +27,9 @@ cpal = "0.18.2"
 zip = { version = "9.5.1", default-features = false, features = ["deflate-flate2"] }
 # zip disables flate2's default features; pick its pure-Rust backend (miniz_oxide is already in the tree).
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Smart select (MobileSAM): onnxruntime.dll is downloaded on demand and loaded at runtime, nothing is linked.
+# Pinned: ort 2.0 is still a release candidate and its API changes between candidates.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic"] }
 
 # Smallest release binary (measured: default 12.3 MB, opt-level "s" 8.0 MB, "z" 6.8 MB).
 # panic stays "unwind": it would save another ~3 MB, but tokio (failed command tasks) and tao (Win32

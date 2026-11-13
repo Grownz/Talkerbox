@@ -10,7 +10,8 @@ export function collapseOrder(priorities: number[]): number[] {
  * Svelte action for a `.fit` toolbar. Restores every `[data-fit]` button, then, while the row overflows,
  * collapses one button at a time: full label -> short label (if any) -> icon only. Inputs in the row
  * shrink to their min-width first because the row only overflows once they cannot shrink any more.
- * Collapsed buttons get the full label as aria-label; their `title` stays the tooltip.
+ * If the row still overflows with every button collapsed, it wraps onto more rows (`data-wrap`) instead of
+ * clipping. Collapsed buttons get the full label as aria-label; their `title` stays the tooltip.
  */
 export function fit(node: HTMLElement) {
   let raf = 0
@@ -27,6 +28,7 @@ export function fit(node: HTMLElement) {
     raf = 0
     if (!node.offsetParent) return // hidden view: the ResizeObserver fires again once it is shown
     const buttons = [...node.querySelectorAll<HTMLElement>('[data-fit]')].filter((b) => b.closest('.fit') === node)
+    delete node.dataset.wrap
     for (const b of buttons) stage(b, 0)
     if (!over()) return
     const order = collapseOrder(buttons.map((b) => Number(b.dataset.p) || 0))
@@ -36,6 +38,7 @@ export function fit(node: HTMLElement) {
         if (s === 1 && !buttons[i].querySelector('.short')) continue
         stage(buttons[i], s)
       }
+    if (over()) node.dataset.wrap = ''
   }
 
   const schedule = () => (raf ||= requestAnimationFrame(run))

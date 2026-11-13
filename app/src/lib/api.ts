@@ -1,5 +1,7 @@
 // Typed wrappers around the Rust commands in src-tauri/src/lib.rs.
+import type { AvatarBg } from './avatar.svelte'
 import { Channel, invoke } from '@tauri-apps/api/core'
+import type { Point, Rig } from './rig'
 import type { VoiceDetail } from './voices'
 
 export interface Settings {
@@ -16,6 +18,12 @@ export interface Settings {
   sttDevice: string | null
   /** Start the Ollama server when the app opens. */
   ollamaAutostart: boolean
+  /** Avatar window background. */
+  avatarBg: AvatarBg
+  /** 0-100: background alpha in transparent mode, figure opacity otherwise. */
+  avatarOpacity: number
+  /** Character shown in the avatar window; null = built-in demo figure. */
+  avatarActive: string | null
 }
 
 export interface InputDevice {
@@ -194,6 +202,37 @@ export const api = {
   sttMute: (muted: boolean) => invoke<void>('stt_mute', { muted }),
   sttStop: () => invoke<void>('stt_stop'),
 
+  /** Smart select (mask editor): ONNX Runtime and MobileSAM are downloaded on demand into `sam\`. */
+  /** `bytes`: everything in `sam\` on disk. */
+  samStatus: () => invoke<{ installed: boolean; bytes: number }>('sam_status'),
+  /** Unloads and deletes the runtime and models (a re-download of about 60 MB is needed to use smart select again). */
+  samRemove: () => invoke<void>('sam_remove'),
+  samDownload: (id: string, onProgress: (p: Progress) => void) => invoke<boolean>('sam_download', { id, onProgress: channel(onProgress) }),
+  /** Encodes an RGBA image (long side at most 1024) unless `key` was encoded last; resolves to the encoder ms (0 = cached). */
+  samEncode: (key: string, rgba: Uint8ClampedArray, width: number, height: number) =>
+    invoke<number>('sam_encode', new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength), {
+      headers: { 'x-key': key, 'x-width': String(width), 'x-height': String(height) },
+    }),
+  /** Mask of `width * height` bytes (1 = inside) for points in the encoded image's pixels. */
+  samDecode: async (points: Point[], labels: number[], width: number, height: number) =>
+    new Uint8Array(await invoke<ArrayBuffer>('sam_decode', { points, labels, width, height })),
+  samRelease: () => invoke<void>('sam_release'),
+
+  /** Saved avatar characters, sorted by name. */
+  avatarList: () => invoke<Rig[]>('avatar_list'),
+  /** Copies a PNG/JPEG/WebP (max 20 MB, 8192 px per side) picked in the open dialog into a new character. */
+  avatarImportImage: (path: string) => invoke<Rig>('avatar_import_image', { path }),
+  avatarLoad: (id: string) => invoke<Rig>('avatar_load', { id }),
+  /** Id, image and createdAt stay as stored; kind is re-derived from the parts. */
+  avatarSave: (rig: Rig) => invoke<Rig>('avatar_save', { rig }),
+  avatarRename: (id: string, name: string) => invoke<Rig>('avatar_rename', { id, name }),
+  avatarDelete: (id: string) => invoke<void>('avatar_delete', { id }),
+  /** The character image as a Blob (for an object URL). */
+  avatarImage: async (rig: Rig) => {
+    const buf = await invoke<ArrayBuffer>('avatar_image', { id: rig.id })
+    const ext = rig.image.file.split('.').pop()
+    return new Blob([buf], { type: ext === 'jpg' ? 'image/jpeg' : `image/${ext}` })
+  },
 }
 
 export function errText(e: unknown): string {

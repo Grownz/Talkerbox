@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { api, errText, type OllamaStatus, type Settings } from './lib/api'
+  import { avatar, puppetOpen, sendToPuppet, watchPuppet } from './lib/avatar.svelte'
+  import AvatarCard from './lib/AvatarCard.svelte'
   import Btn from './lib/Btn.svelte'
   import Chat from './lib/Chat.svelte'
   import { fit } from './lib/fit'
@@ -11,11 +13,12 @@
   import Terminal from './lib/Terminal.svelte'
   import ThemeSwitch from './lib/ThemeSwitch.svelte'
 
-  type View = 'chat' | 'models' | 'speech' | 'server'
+  type View = 'chat' | 'models' | 'speech' | 'avatar' | 'server'
   const NAV: { id: View; label: string; icon: IconName; tip: string }[] = [
     { id: 'chat', label: 'Chat', icon: 'chat', tip: 'Talk to the selected model and hear its replies' },
     { id: 'models', label: 'Models', icon: 'cube', tip: 'Manage Ollama models: pull, import, delete' },
     { id: 'speech', label: 'Speech', icon: 'wave', tip: 'Kokoro speech files, voices and language packs' },
+    { id: 'avatar', label: 'Avatar', icon: 'figure', tip: 'Avatar window, characters, mask and part editors' },
     { id: 'server', label: 'Server', icon: 'plug', tip: 'Ollama server status, install path and log' },
   ]
 
@@ -106,7 +109,16 @@
       }
     })()
     const timer = setInterval(refresh, 5000)
-    return () => clearInterval(timer)
+    const unwatch = watchPuppet(() => ({
+      bg: settings?.avatarBg ?? 'normal',
+      opacity: settings?.avatarOpacity ?? 100,
+      character: settings?.avatarActive ?? null,
+      rev: avatar.rev,
+    }))
+    return () => {
+      clearInterval(timer)
+      unwatch()
+    }
   })
 
   // Persist settings whenever any field changes (the first run just stores what was loaded).
@@ -114,6 +126,14 @@
     if (!settings) return
     const snapshot = $state.snapshot(settings)
     api.saveSettings(snapshot).catch((e) => (error = `Saving settings failed: ${errText(e)}`))
+  })
+
+  // Live avatar options; a transparency change makes the backend recreate the open window.
+  $effect(() => {
+    if (!settings || !avatar.open) return
+    const { avatarBg: bg, avatarOpacity: opacity, avatarActive: character } = settings
+    sendToPuppet('avatar://options', { bg, opacity, character, rev: avatar.rev })
+    puppetOpen(bg === 'transparent').catch((e) => (error = errText(e)))
   })
 
   const pathTitle = $derived(
@@ -188,6 +208,15 @@
       <section class="view page" hidden={view !== 'models' && view !== 'speech'} aria-label={view === 'speech' ? 'Speech' : 'Models'}>
         <div class="page-in">
           <Models bind:settings view={view === 'speech' ? 'speech' : 'models'} running={!!status?.running} onModelsChanged={() => modelsVersion++} />
+        </div>
+      </section>
+      <section class="view page" hidden={view !== 'avatar'} aria-label="Avatar">
+        <div class="page-in">
+          <header class="ph">
+            <h1>Avatar</h1>
+            <p>A figure that talks with the spoken replies: window options, your characters and their editors.</p>
+          </header>
+          {#if view === 'avatar'}<AvatarCard bind:settings onError={(m) => (error = m)} />{/if}
         </div>
       </section>
     {/if}

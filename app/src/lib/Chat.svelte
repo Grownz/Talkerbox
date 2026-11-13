@@ -14,6 +14,7 @@
   } from './api'
   import { finalRate, formatRate, liveRate } from './rate'
   import { Speaker } from './speaker'
+  import { avatar, toggleAvatar } from './avatar.svelte'
   import Btn from './Btn.svelte'
   import DeviceMenu from './DeviceMenu.svelte'
   import { fit } from './fit'
@@ -420,6 +421,14 @@
       </label>
       <Btn icon="speaker-off" label="Stop speaking" p={1} class="ghost" title="Stop the current speech and drop queued sentences" onclick={() => speaker.stop()} />
     {/if}
+    <Btn
+      icon="user"
+      label="Avatar"
+      class="ghost"
+      aria-pressed={avatar.open}
+      title={avatar.open ? 'Close the avatar window' : 'Open the avatar window: a figure that moves its mouth while replies are spoken (options on the Avatar page)'}
+      onclick={() => toggleAvatar(settings.avatarBg).catch((e) => (error = errText(e)))}
+    />
   </div>
 </header>
 

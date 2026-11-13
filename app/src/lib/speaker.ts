@@ -1,6 +1,22 @@
 // Sentence-by-sentence speech: streamed text in, WebAudio playback out.
 import { api, errText } from './api'
+import { avatar, sendToPuppet } from './avatar.svelte'
+import { envelope } from './envelope'
+import type { AvatarSentence } from './avatarQueue'
 import { chunkLong, SpeechText } from './sentences'
+import { visemes } from './viseme'
+
+const HOP_MS = 20
+
+/** Epoch ms at which audio scheduled for context time `at` reaches the speakers. */
+function epochAt(ctx: AudioContext, at: number): number {
+  const ts = ctx.getOutputTimestamp()
+  // performanceTime is 0 until the output has started; fall back to currentTime + reported latency.
+  const perf = ts.performanceTime
+    ? ts.performanceTime + (at - (ts.contextTime ?? 0)) * 1000
+    : performance.now() + (at - ctx.currentTime + (ctx.outputLatency || ctx.baseLatency || 0)) * 1000
+  return performance.timeOrigin + perf
+}
 
 /** Removes markdown syntax that would otherwise be read aloud. */
 export function speakable(s: string): string {
@@ -30,6 +46,12 @@ export class Speaker {
   private sources = new Set<AudioBufferSourceNode>()
   private nextStart = 0
 
+  /** `source` tags this speaker's avatar events, so stopping it never clears another speaker's mouth. */
+  private source: string
+  constructor(source = 'chat') {
+    this.source = source
+  }
+
   /** Call from a user gesture so the browser allows audio playback. */
   unlock() {
     this.ctx ??= new AudioContext()
@@ -53,6 +75,7 @@ export class Speaker {
     for (const s of this.sources) s.stop()
     this.sources.clear()
     this.nextStart = 0
+    sendToPuppet('avatar://stop', { source: this.source })
     this.update()
   }
 
@@ -105,10 +128,22 @@ export class Speaker {
     src.start(at)
     this.nextStart = at + buf.duration
     this.sources.add(src)
+    if (avatar.open) {
+      const pcm = buf.getChannelData(0)
+      const msg: AvatarSentence = {
+        startMs: epochAt(ctx, at),
+        hopMs: HOP_MS,
+        envelope: envelope(pcm, buf.sampleRate, HOP_MS),
+        ...visemes(pcm, buf.sampleRate, HOP_MS),
+        source: this.source,
+        sentMs: performance.timeOrigin + performance.now(),
+      }
+      sendToPuppet('avatar://sentence', msg)
+    }
     src.onended = () => {
       this.sources.delete(src)
+      if (!this.sources.size) sendToPuppet('avatar://stop', { source: this.source })
       this.update()
     }
-
   }
 }

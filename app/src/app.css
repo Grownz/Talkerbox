@@ -284,6 +284,10 @@ svg.flag {
   padding: 3px; /* room for focus rings inside the clipped row */
   margin: -3px;
 }
+/* Last resort (fit.ts): everything is collapsed and the row is still too wide. */
+.fit[data-wrap] {
+  flex-wrap: wrap;
+}
 .fit > .grow {
   flex: 1 1 auto;
   width: auto;
@@ -427,7 +431,7 @@ svg.flag {
 }
 
 /* ===== Inputs ===== */
-:where(input:not([type='range']):not([type='checkbox']), select, textarea) {
+:where(input:not([type='range']):not([type='checkbox']):not([type='radio']), select, textarea) {
   height: var(--h);
   border: 1px solid var(--border-strong);
   border-radius: var(--r);
@@ -1643,3 +1647,9 @@ button.mic.on.locked {
   }
 }
 
+
+/* Toggle buttons (e.g. the Avatar window button) */
+button[aria-pressed='true'] {
+  background: var(--acc-soft);
+  color: var(--acc-text);
+}

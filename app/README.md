@@ -1,10 +1,14 @@
-# Talkerbox (desktop app)
+# Talkerbox (desktop app): developer documentation
 
-Windows desktop chatbot with spoken replies. Tauri v2 (Rust backend), Svelte 5 + TypeScript frontend, Vite.
+Technical reference for the app in this folder: how each feature works, data formats, runtimes and checks. For what
+the app does from a user's point of view, installation and the step-by-step build guide, see the
+[top-level README](../README.md); for the release history, [CHANGELOG.md](../CHANGELOG.md).
+
+Tauri v2 (Rust backend in `src-tauri/`), Svelte 5 + TypeScript frontend in `src/`, Vite, unit tests in `tests/`.
 The LLM comes from a locally installed [Ollama](https://ollama.com), which Talkerbox never installs. Speech comes from the
 separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
 
-## Features
+## Features in detail
 
 - **Ollama discovery**: checks `http://127.0.0.1:11434/api/version` first, then looks for `ollama.exe` at the saved
   path, on `PATH`, in `%LOCALAPPDATA%\Programs\Ollama`, and in `C:\Program Files\Ollama`. If none is found, a dialog asks
@@ -16,7 +20,7 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
 - **Auto-start**: when the app opens and Ollama was found but is not running, Talkerbox starts `ollama serve` right
   away (once; a failure shows the usual error banner). If Ollama is not found, the path dialog opens instead. The
   "Start Ollama automatically" switch on the Server page turns this off (setting `ollamaAutostart`, default on).
-- **Layout**: a left sidebar with Chat, Models, Speech and Server pages and the Ollama status at the bottom. Below
+- **Layout**: a left sidebar with Chat, Models, Speech, Avatar and Server pages and the Ollama status at the bottom. Below
   1024 px window width it collapses to a 64 px icon rail. Toolbar buttons shorten their labels, then become icons
   (tooltip and accessible name stay) when space runs out; text inputs shrink first. The window cannot be made smaller
   than 720 x 520.
@@ -42,6 +46,116 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   at the last space or comma (the sidecar rejects texts over 2000). TTS start, stop and restart run one at a time.
   Stopping closes the sidecar's stdin and waits up to 3 s before killing it: only a clean exit lets the PyInstaller
   exe delete its `%TEMP%\_MEI*` folder. App exit uses the same path, and the job object stays as a safety net.
+- **Avatar window**: the "Avatar" button in the chat header or the switch on the Avatar page opens a second window
+  (`puppet.html`, label `puppet`) with the selected character (or the built-in demo figure) whose mouth follows the
+  loudness of the spoken reply. For every sentence the main window sends one `avatar://sentence` event with a 20 ms
+  loudness envelope and the playback start time on the shared clock; the avatar window plays it on its own animation
+  loop. The event also carries the mouth shape per 20 ms (viseme lip-sync, `src/lib/viseme.ts`): a small acoustic
+  classifier on the decoded sentence audio (no model, no extra dependency) looks at where the voiced energy sits after
+  pre-emphasis. Energy pulled up to 1.7 kHz and more reads as wide (E, I), a low first formant without it as round
+  (O, U, W), a high first formant as open (A), and hiss above 3.5 kHz as teeth (F, V, S), which closes the mouth a
+  little. Loudness sets how far the mouth opens, the shape how; the shape eases over about 70 ms so neighbouring
+  sounds blend, silence is neutral, and without shape data (older senders) the mouth follows the loudness only. The
+  sentence's `source` (`chat` or `test`) keeps the two speakers apart: stopping "Test speech" never clears the mouth
+  of a reply being read, and the other way round. Kokoro phoneme timing was checked and not used: the base model
+  `kokoro-v1.0.onnx` has no duration output (only some pack exports have one), so it would not work for the default
+  voices. `src/lib/poseGen.ts` turns this into a pose every frame: the mouth opens with the smoothed loudness,
+  the eyes blink at random every 2 to 6 seconds, the figure sways a little, and while it speaks the arms gesture with
+  a slow noisy swing whose size follows the speech energy (each limb with its own rhythm, hands follow their arm, legs
+  only shift the weight a little), easing back to rest when it is quiet. With Windows "reduce motion" there is no sway
+  and no gesture; mouth and blinking still work. Characters are drawn on a canvas with the part editor's renderer
+  (`src/lib/rigPuppet.ts`, `src/lib/rigRender.ts`), fitted into the window, sharp on high-DPI screens; the cut-out
+  and part textures are prepared once per load, so each frame only moves them, and drawing pauses while the window is
+  hidden or minimised (the Rust side reports minimising with `avatar://minimized`, because WebView2 keeps running a
+  minimised webview). Only the parts a character has move: without parts the whole figure sways and bobs with the speech; if the
+  image or `rig.json` cannot be loaded, the demo figure is shown. "Test speech" on the Avatar page opens the avatar
+  window and speaks a sample sentence with the selected voice (without running speech it plays a silent loudness
+  pattern), so you can watch the avatar without chatting. Background: theme, green screen (#00ff00) or transparent
+  (only the cut-out and its parts are drawn), plus an opacity slider; switching to or from transparent reopens the
+  window. Position and size are saved when the window closes; if that place is on a monitor that is gone, the window
+  opens on the primary monitor. Closing the main window closes the avatar window too.
+- **Characters** (Avatar page, below the avatar options): "Import image…" copies a PNG, JPEG or WebP (max 20 MB and
+  8192 px per side, type checked by its header bytes; JPEG photos turned by their EXIF orientation are sized upright)
+  into `avatars\<id>\image.<ext>` and creates
+  `avatars\<id>\rig.json`. The id is generated from the file name (`[a-z0-9-]`, `-2`, `-3`, … on collision). The list
+  shows a thumbnail (the cut-out once a mask exists), the kind (portrait, or full body once arm or leg parts exist)
+  and the size. You can rename a character in place, delete it (with confirmation) and pick which one the avatar
+  window shows (`avatarActive`; the demo figure is the fallback). Without a mask the avatar window shows the whole
+  image. `rig.json` (format `version: 1`, see `src/lib/rig.ts` and `src-tauri/src/rig.rs`) holds the image size,
+  the outline mask and the parts as polygons with pivots in image coordinates from 0 to 1. It is validated on every
+  load and save (number ranges, point and part counts, unique ids, parent chains, file name) and written atomically.
+- **Mask editor** ("Edit mask" on a character, `src/lib/MaskEditor.svelte`, geometry in `src/lib/maskGeometry.ts`):
+  outline the figure so the avatar window shows a cut-out (it renders the image clipped to the outline, which makes
+  green-screen and transparent mode useful). Tools: **Polygon** (click to add points; click the first point,
+  double-click or press Enter to close; drag a point to move it, click an edge to insert one, right-click or Delete
+  removes one, Backspace removes the last point while drawing; arrow keys nudge the selected point), **Brush** (paint,
+  or remove with Erase; `[` and `]` change the size) and **Magic wand** (adds a region of similar colour within the
+  tolerance; with Erase it removes it). Brush and wand work on a working copy with a long side of 512 px; the result
+  is traced back into an outline (largest area only, holes ignored) and simplified. **Smooth** (Chaikin corner cutting
+  plus Douglas-Peucker) and **Snap to contour** (moves the outline along its normals onto the strongest Sobel edge
+  within up to 16 working pixels, with the movement smoothed along the outline) are non-destructive: the drawn
+  outline is kept in `mask.points`, the slider values in `mask.smooth`/`mask.snap` (0..1) and the result in
+  `mask.smoothed` (at most 4096 points), which is what the avatar window uses. Apply makes the result the drawn
+  outline. Zoom with the wheel, pinch, `+`/`-` or the buttons, `0` fits the image; pan with Space+drag, the middle
+  mouse button, two fingers or the arrow keys. The Preview menu shows the cut-out on a checkerboard, green or dark
+  background. Ctrl+Z / Ctrl+Y undo and redo, Ctrl+S saves, Esc closes (asking before discarding unsaved changes),
+  Revert reloads the saved mask. An open avatar window reloads the character after saving.
+  - **Smart select** (`src/lib/smartSelect.ts`, `src/lib/smartSession.svelte.ts`, `src-tauri/src/sam.rs`): click the figure and MobileSAM proposes its
+    outline as a green overlay. Left click adds a point on the figure, right-click or Alt+click a background point,
+    a drag draws a box around the figure (the last box counts); each change updates the proposal (decoder only).
+    "Add" or Enter merges the proposal into the mask, with Erase on "Remove" cuts it out; the result goes through
+    the same tracing (largest area), simplification, Smooth/Snap sliders and undo as brush and wand. Backspace,
+    Ctrl+Z or Undo remove the last point while points are set, Esc or "Clear points" removes them all. The image is
+    encoded once when the tool is first picked (long side 1024 px; the backend keeps the embedding for that
+    character), so each click only runs the small decoder, whose mask comes back at the 512 px working size.
+    Measured on a Ryzen 7 7700X (8 cores): model load about 0.3 s, encoder about 0.25 s (0.53 s with 2 threads),
+    decoder about 20 ms per click (33 ms with 2 threads); a typical laptop CPU should stay well under 1 s for the
+    encoder and under 100 ms per click. The first use offers a one-time download of about 60 MB into `sam\` (see
+    "Smart select runtime"); the model memory is freed whenever the editor closes, so the next character (or the same
+    one again) loads it afresh. The trash button in the Smart select bar, or "Remove model…" in the "Smart select
+    model" card on the Avatar page (which shows the size on disk), deletes the downloaded files after a confirmation;
+    smart select then offers the download again.
+- **Part editor** ("Edit parts" on a character, `src/lib/PartEditor.svelte`; rendering in `src/lib/rigRender.ts`):
+  marks the parts that move. Choose a role and press Add, then outline the part with the same polygon interactions
+  and viewing controls as the mask editor. Or press **Pick** to let Smart select outline it: click the part on the
+  image (right-click or Alt+click marks what does not belong to it, a drag draws a box), watch the proposal in the
+  role's colour, and press Create or Enter (Esc cancels, Backspace or Ctrl+Z removes the last point). The proposal is
+  traced and simplified like the mask tools (largest area, at most 1024 points), becomes a closed part with the
+  role's default pivot and parent (a hand hangs on the arm of its side), and can be undone like any edit; after a
+  mouth, the editor offers "Auto-split lips". It uses the same model, download, removal and per-editor release as the
+  mask editor (shared code: `src/lib/smartSession.svelte.ts`, `src/lib/SmartSelectBar.svelte`). Checked with the real
+  model on a synthetic figure (one click each): eye, mouth and arm outlines overlap the drawn shapes by 0.89, 0.91 and
+  0.92 IoU at the 512 px working size, with the pivots at the eye centre and the arm's top end. Roles: left/right eye, mouth, left/right arm, hand and leg (the
+  character's own sides), head, body, each at most once, and any number of custom parts. Arm or leg parts make the
+  character a full body figure, otherwise it is a portrait (shown as a badge). When an outline is closed it gets a
+  pivot, the point it turns about, shown as a crosshair you can drag: arms, hands and legs start at the middle of their
+  top end (shoulder, wrist, hip), the others at their centre. "Attached to" makes a part move with another one (a new
+  hand is attached to the arm of its side); loops are not offered and are refused on save. The list sets the drawing
+  order (later parts are drawn in front), and each part can be renamed, deleted or hidden on the canvas. Eyes blink
+  by squashing toward their pivot line over an eyelid colour, sampled from the image around the eye (pickable). The
+  mouth opens by filling an optional "Open shape" (the dark inside, drawn within the mouth) in a pickable colour,
+  scaled vertically with the opening (and a little wider or narrower with the mouth shape); without it a shrunk copy
+  of the mouth outline is used. **Lips** (optional, on the mouth): "Upper lip" and "Lower lip" outline each lip like
+  any polygon, or "Auto-split" suggests both from the mouth outline (split along the line between its leftmost and
+  rightmost point, which become the mouth corners). With both lips the mouth opens by moving them apart: the upper lip
+  a little up, the lower lip further down, most in the middle and not at the corners; a wide shape pulls the corners
+  out and opens less high, a round one pulls them in and pushes the lips apart. The opening between them is filled
+  with the inside colour, and the face around the mouth is warped so cheeks and chin follow (`src/lib/mouthWarp.ts`,
+  pure and tested): a mesh in the mouth's own frame (rows follow the line where the lips meet, so only triangles
+  inside the opening are torn) whose displacement falls off smoothly to zero at a radius of about 1.5 mouth widths at
+  the default "Face warp" of 60 % (0 % moves only the lips, 100 % about 2.4 widths). Each triangle is drawn with a
+  canvas clip and affine transform from textures cut once per character (no WebGL); triangles overlap by under one
+  device pixel and the base image is cut out slightly smaller than the never-moving mesh outline, so no seams show.
+  Lips outlined the wrong way round are swapped; the editor warns when a lip reaches outside the mask or the lips are
+  too small to move (the mouth then opens with the open shape). Each triangle only blits the texture pixels under it.
+  The preview has a Viseme menu and the Face warp slider, and Play demo cycles the mouth shapes. The preview (Preview
+  menu) draws the character with the shared renderer: the base image within the mask, then each part cut from the
+  image (part outline within the mask) and turned about its pivot, hands following their arm; sliders set mouth,
+  blink and each arm or leg angle (-60 to 60 degrees), Play demo animates them. There is no inpainting: the area a
+  moved part uncovers still shows the original image. Data: `parts[].pivot`, `parent`, `z`, optional `label` and
+  `lid`, plus `mouth.interior`, `mouth.color`, and `mouth.lipUpper`/`mouth.lipLower` (both or neither),
+  `mouth.corners` (two points) and `mouth.warp` (0..1) (format stays `version: 1`, older files load unchanged). Undo, redo,
+  Ctrl+S, Esc and Revert work as in the mask editor. The avatar window animates the saved parts (see Avatar window).
 - **Extra voices**: on the Speech page, "Add model or voice from link" accepts a HuggingFace link (`/blob/` pages are turned into
   `/resolve/` links) or any direct URL to a `.pt`/`.npy`/`.npz`/`.bin` file of at most 50 MB. Files are stored in
   `tts\voices` in the local app data dir. The sidecar gets `--voices-dir` when that folder holds a voice file, and a
@@ -121,45 +235,35 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   rejected, max 500 MB unpacked), checked for `am/final.mdl` and moved to `stt\<model>`. If the model for the chosen
   language is missing, the mic button shows a hint instead of starting.
 - **Settings** (`settings.json` in the app config dir, `%APPDATA%\com.talkerbox.app`): Ollama path, last model, voice,
-  TTS on/off and speed, speech input language, idle time and microphone, Ollama auto-start.
+  TTS on/off and speed, speech input language, idle time and microphone, Ollama auto-start, avatar background,
+  opacity, window bounds and selected character.
 
 Downloads, logs and models are stored in the local app data dir (`%LOCALAPPDATA%\com.talkerbox.app`): `gguf\` (temporary),
-`tts\`, `stt\` and `logs\sidecar.log`. Ollama's output is not written to disk: it is kept in memory for the terminal view.
+`tts\`, `stt\`, `sam\` (smart select: `onnxruntime.dll` and the two MobileSAM `.onnx` files, about 64 MB;
+removable on the Avatar page), `avatars\` and `logs\sidecar.log`. Ollama's output is not written to disk: it is kept in memory for the terminal view.
 
-## Prerequisites
+## Prerequisites, development and release build
 
-- Node.js 22.18+ and npm (the tests use Node's built-in TypeScript type stripping)
-- Rust (stable, `x86_64-pc-windows-msvc`) and the MSVC C++ Build Tools
-- Python 3.10+ with the `py` launcher, for the TTS sidecar and the Vosk runtime setup
-- WebView2 (preinstalled on Windows 11)
-- Ollama installed separately (needed only at runtime)
-
-## Development
-
-Once, before the first build: build the TTS sidecar and set up the Vosk runtime (see the top-level README, "Build
-and run", and the sections below).
+Prerequisites with versions, the one-time sidecar and Vosk steps, and troubleshooting are in the
+[top-level README](../README.md#build-from-source). Short form, from this folder:
 
 ```powershell
-cd app
-npm install
+npm ci
 npm run tauri dev      # Vite dev server on :1420 + Rust app with hot reload
+npm run tauri build    # NSIS installer: src-tauri/target/release/bundle/nsis/Talkerbox_<version>_x64-setup.exe
 ```
 
 Checks:
 
 ```powershell
 npm run check                          # svelte-check + tsc
-npm test                               # frontend unit tests (node --test: rates, sentences, voices, speech input, ...)
+npm test                               # frontend unit tests (node --test: geometry, rig, lip-sync, smart select, ...)
 npm run build                          # frontend production build
-cd src-tauri; cargo test; cargo clippy --all-targets # Rust unit tests (HF links, Ollama path order, speech input, ...)
-
+cd src-tauri; cargo clippy --all-targets; cargo test   # Rust lints (warning-free) and unit tests
 ```
 
-## Release build
-
-```powershell
-npm run tauri build    # NSIS installer in src-tauri/target/release/bundle/nsis/
-```
+Version numbers live in `package.json`, `package-lock.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and
+the `talkerbox` entry of `src-tauri/Cargo.lock`; a release bumps all five.
 
 ## TTS sidecar
 
@@ -196,8 +300,9 @@ The `vosk` crate links `libvosk.dll` (Vosk 0.3.45). `src-tauri/vosk/` must hold 
 import library `libvosk.lib`; none of them are in git. Create them once with:
 
 ```powershell
-src-tauri\vosk\setup.ps1                                  # default: ..\spikes\vosk-stt\.venv\Lib\site-packages\vosk
-src-tauri\vosk\setup.ps1 -From <site-packages>\vosk       # any `pip install vosk==0.3.45`
+py -3 -m venv $env:TEMP\vosk-venv
+& "$env:TEMP\vosk-venv\Scripts\python.exe" -m pip install vosk==0.3.45
+src-tauri\vosk\setup.ps1 -From "$env:TEMP\vosk-venv\Lib\site-packages\vosk"   # always pass -From
 ```
 
 It copies `libvosk.dll`, `libstdc++-6.dll`, `libgcc_s_seh-1.dll` and `libwinpthread-1.dll` and builds `libvosk.lib`
@@ -217,17 +322,65 @@ Licences: `libvosk.dll` Apache-2.0; `libstdc++-6.dll` and `libgcc_s_seh-1.dll` G
 Exception; `libwinpthread-1.dll` MIT-style. The Vosk small models are Apache-2.0. See the third-party notices in the
 top-level README.
 
+## Smart select runtime
+
+Nothing to set up at build time: `ort` 2.0.0-rc.15 is built with only the `load-dynamic` feature, so no ONNX Runtime
+library is linked or bundled (the release exe grew by about 0.5 MB). The mask editor's download button runs
+`sam_download`, which fetches three pinned files into `sam\` of the local app data dir with the resumable
+downloader, checks each against its exact size and SHA-256 (a bad file is deleted), and can be cancelled:
+
+- `onnxruntime-1.31.1-cp312-cp312-win_amd64.whl` from PyPI (14.9 MB). A wheel is a zip; only
+  `onnxruntime/capi/onnxruntime.dll` (19 MB, the C API DLL that exports `OrtGetApiBase`) is unpacked, then the wheel
+  is deleted. The official GitHub zip holds the same kind of DLL but is 83 MB because of debug symbols.
+- `mobile_sam_image_encoder.onnx` (28.2 MB) and `sam_mask_decoder_single.onnx` (16.5 MB) from
+  `huggingface.co/Acly/MobileSAM`, pinned to commit `0d3b4033`. The encoder takes the RGB image (H x W x 3, long side
+  1024) and normalises and pads it itself; the decoder is the standard SAM ONNX decoder (points, labels,
+  `orig_im_size`) and returns mask logits at the requested size.
+
+ONNX Runtime allows one environment per process (`ort` refuses a second one even after the first was dropped), so
+`sam.rs` creates it once and keeps it; only the two sessions and the cached embedding are created per editor and
+dropped by `sam_release` when the editor closes. `sam_remove` drops a loaded model first and deletes everything in
+`sam\`. The DLL stays mapped until the app exits (`ort` never unloads it) and Windows refuses to delete a loaded DLL,
+so it is renamed to `*.old` instead (it no longer counts as installed) and deleted on the next start or download.
+
+The DLL is loaded with an absolute path (never the old `onnxruntime.dll` that Windows ships in System32). It needs
+the Microsoft Visual C++ runtime (`msvcp140.dll`); if it cannot be loaded, the editor says so and suggests installing
+the Visual C++ Redistributable (x64). Inference runs on the CPU provider with ONNX Runtime's default thread count,
+off the async runtime (`spawn_blocking`). The image goes to Rust as raw RGBA bytes (no JSON), the mask comes back as
+raw bytes.
+
+Real-model check: three editor sessions in a row (load, encode, clicks, release) on three different synthetic images,
+then `remove` while the DLL is loaded; prints load/encode/decode ms and the overlap with the drawn disc (the files
+are copied to a temp folder first):
+
+```powershell
+$env:TALKERBOX_SAM_DIR = "$env:LOCALAPPDATA\com.talkerbox.app\sam"   # or any folder with the three files
+cargo test --release sam_real -- --ignored --nocapture
+```
+
+Why not onnxruntime-web in the WebView: its WASM files (about 10-25 MB) would ship in the installer or need their
+own download plus a CSP change for WebAssembly, multi-threading needs cross-origin isolation headers, and
+single-threaded WASM is several times slower than the native CPU provider. Licences: ONNX Runtime MIT; MobileSAM
+Apache-2.0; the `Acly/MobileSAM` export repository is MIT.
+
 ## Security notes
 
 - All HTTP (Ollama, sidecar, downloads) runs in Rust. The webview's CSP allows only `'self'` and Tauri IPC.
-- Capabilities: `core:default`, plus `dialog:allow-open` and `dialog:allow-ask`. No shell or filesystem plugin
-  permissions are granted to the webview. Processes are spawned only by fixed Rust commands.
+- Capabilities: `core:default`, plus `dialog:allow-open` and `dialog:allow-ask` for the main window; the avatar
+  window gets only `core:event:default`. No shell or filesystem plugin permissions are granted to the webview.
+  Processes are spawned only by fixed Rust commands. Character files are only read and written under `avatars\<id>`
+  with ids checked in Rust; the image path from the open dialog is only read and copied.
 - Download URLs must be http(s). Local file names are sanitised to `[A-Za-z0-9._-]`.
+- Smart select downloads only fixed URLs, each checked against a pinned size and SHA-256 before use; the DLL is
+  loaded from the app data dir by absolute path.
 
 ## Layout
 
 ```
-src/                 Svelte UI (App shell, Chat, Models/Speech, path dialog, theme, fit toolbars, speaker queue, typed API wrappers)
+src/                 Svelte UI (App shell, Chat, Models/Speech, Avatar page, path dialog, theme, fit toolbars, speaker queue,
+                     typed API wrappers); avatar: MaskEditor/PartEditor, rig*.ts, mouthWarp, viseme, poseGen,
+                     smartSelect/smartSession (shared smart select), puppet window (puppet.html, PuppetView)
+tests/               node --test unit tests for the pure modules
 src-tauri/src/
   lib.rs             Tauri commands, app state, process handling
   ollama.rs          Ollama HTTP client (chat, tags, pull, delete, blobs/create) + `ollama serve`
@@ -239,5 +392,8 @@ src-tauri/src/
   download.rs        resumable streaming downloads
   tts.rs             sidecar lifecycle and HTTP calls
   stt.rs             speech input: mic capture, resampling, Vosk, idle timer, model zip install (unit-tested)
+  avatar.rs          avatar window: open/close, transparency, saved bounds (unit-tested)
+  rig.rs             avatar characters: rig.json model, validation, image import (unit-tested)
+  sam.rs             smart select: pinned downloads, ONNX Runtime + MobileSAM encoder/decoder (unit-tested)
   config.rs          settings.json
 ```

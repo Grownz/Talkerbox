@@ -1,3 +1,4 @@
+mod avatar;
 mod config;
 mod discovery;
 mod download;
@@ -6,6 +7,8 @@ mod hf;
 mod names;
 mod ollama;
 mod packs;
+mod rig;
+mod sam;
 mod stt;
 mod term;
 #[cfg(test)]
@@ -135,6 +138,8 @@ struct AppState {
     stt: Mutex<Option<stt::Listener>>,
     /// Set while a reply is read aloud: speech input drops the audio (kept across listeners).
     stt_muted: Arc<AtomicBool>,
+    /// Smart select model, loaded on first use while a mask editor is open (released when it closes).
+    sam: Arc<Mutex<Option<sam::Sam>>>,
 }
 
 impl AppState {
@@ -1039,6 +1044,120 @@ async fn stt_stop(state: State<'_, AppState>) -> Res<()> {
     Ok(())
 }
 
+// ---------- smart select (mask editor) ----------
+
+fn sam_dir(app: &AppHandle) -> Res<PathBuf> {
+    Ok(data_dir(app)?.join("sam"))
+}
+
+#[derive(Serialize)]
+struct SamStatus {
+    installed: bool,
+    /// Bytes on disk in `sam\` (models, runtime, partial downloads).
+    bytes: u64,
+}
+
+#[tauri::command]
+fn sam_status(app: AppHandle) -> Res<SamStatus> {
+    let dir = sam_dir(&app)?;
+    sam::clean_stale(&dir);
+    Ok(SamStatus { installed: sam::installed(&dir), bytes: sam::disk_size(&dir) })
+}
+
+/// Deletes the smart select runtime and models (unloading them first); a re-download is needed to use it again.
+#[tauri::command]
+async fn sam_remove(app: AppHandle, state: State<'_, AppState>) -> Res<()> {
+    let (dir, cell) = (sam_dir(&app)?, state.sam.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        drop(cell.lock().unwrap().take());
+        sam::remove(&dir)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Downloads (resumable) the ONNX Runtime DLL and the MobileSAM encoder and decoder into `sam\` of the app data dir;
+/// every file must match its pinned size and SHA-256. Files already in place are skipped.
+#[tauri::command]
+async fn sam_download(app: AppHandle, state: State<'_, AppState>, id: String, on_progress: Channel<Progress>) -> Res<bool> {
+    let dir = sam_dir(&app)?;
+    sam::clean_stale(&dir);
+    let op = state.op(&id);
+    for (a, label) in [(&sam::RUNTIME_WHEEL, "Runtime"), (&sam::ENCODER, "Image encoder"), (&sam::DECODER, "Mask decoder")] {
+        let dest = dir.join(a.file);
+        let runtime = std::ptr::eq(a, &sam::RUNTIME_WHEEL);
+        let have = if runtime { dir.join(sam::RUNTIME_DLL).is_file() } else { std::fs::metadata(&dest).is_ok_and(|m| m.len() == a.size) };
+        if have {
+            continue;
+        }
+        let url = reqwest::Url::parse(a.url).map_err(|e| e.to_string())?;
+        let on = |p: Progress| send(&on_progress, Progress { message: format!("{label}: {}", p.message), ..p });
+        if download::download(&state.http, url, &dest, Some(a.size), &op.notify, on).await? {
+            return Ok(true);
+        }
+        send(&on_progress, Progress { message: format!("{label}: checking"), completed: None, total: None });
+        let d = dir.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            sam::verify(&dest, a)?;
+            if runtime {
+                let r = sam::extract_runtime(&dest, &d);
+                let _ = std::fs::remove_file(&dest);
+                r?;
+            }
+            Ok::<_, String>(())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+    }
+    Ok(false)
+}
+
+/// Encodes the image for smart select (raw body: RGBA bytes; headers `x-key`, `x-width`, `x-height`, long side at most
+/// 1024). Loads the model on first use; an image with the key encoded last is not encoded again. Returns the encoder ms.
+#[tauri::command]
+async fn sam_encode(app: AppHandle, state: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> Res<f64> {
+    let tauri::ipc::InvokeBody::Raw(rgba) = request.body() else {
+        return Err("Smart select expects raw image bytes".into());
+    };
+    let hdr = |k: &str| request.headers().get(k).and_then(|v| v.to_str().ok()).map(str::to_string).ok_or(format!("Missing header {k}"));
+    let key = hdr("x-key")?;
+    let num = |k: &str| hdr(k)?.parse::<usize>().map_err(|_| format!("Invalid header {k}"));
+    let (w, h) = (num("x-width")?, num("x-height")?);
+    let (rgba, dir, cell) = (rgba.clone(), sam_dir(&app)?, state.sam.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut g = cell.lock().unwrap();
+        if g.is_none() {
+            if !sam::installed(&dir) {
+                return Err("The smart select model is not installed".into());
+            }
+            *g = Some(sam::Sam::load(&dir)?);
+        }
+        g.as_mut().map_or(Err("Smart select is not loaded".into()), |s| s.encode(&key, &rgba, w, h))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Mask for a prompt on the last encoded image: raw bytes, `width * height`, 1 = inside. Points are in the pixels of
+/// the encoded image; labels 1 figure, 0 background, 2/3 box corners, -1 padding.
+#[tauri::command]
+async fn sam_decode(state: State<'_, AppState>, points: Vec<[f32; 2]>, labels: Vec<f32>, width: usize, height: usize) -> Res<Response> {
+    let cell = state.sam.clone();
+    let mask = tauri::async_runtime::spawn_blocking(move || {
+        cell.lock().unwrap().as_mut().ok_or("Smart select is not loaded".to_string())?.decode(&points, &labels, width, height)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(Response::new(mask))
+}
+
+/// Frees the model memory (the mask editor closed).
+#[tauri::command]
+async fn sam_release(state: State<'_, AppState>) -> Res<()> {
+    let s = state.sam.lock().unwrap().take();
+    tauri::async_runtime::spawn_blocking(move || drop(s)).await.map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let http = reqwest::Client::builder()
@@ -1058,6 +1177,7 @@ pub fn run() {
             job: KillJob::new(),
             stt: Mutex::new(None),
             stt_muted: Arc::default(),
+            sam: Arc::default(),
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -1098,15 +1218,36 @@ pub fn run() {
             stt_start,
             stt_mute,
             stt_stop,
-
+            sam_status,
+            sam_download,
+            sam_remove,
+            sam_encode,
+            sam_decode,
+            sam_release,
+            avatar::puppet_open,
+            avatar::puppet_close,
+            rig::avatar_list,
+            rig::avatar_import_image,
+            rig::avatar_load,
+            rig::avatar_save,
+            rig::avatar_rename,
+            rig::avatar_delete,
+            rig::avatar_image,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Talkerbox");
     app.run(|app, event| {
         // Only processes we spawned are tracked, so an externally started Ollama keeps running.
         // The job object covers crashes and forced termination; this handles the normal close path.
-        if matches!(event, RunEvent::Exit | RunEvent::WindowEvent { event: tauri::WindowEvent::Destroyed, .. }) {
+        // Closing the main window also closes the avatar window, so the app exits.
+        let main_gone = matches!(&event, RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } if label == "main");
+        if main_gone || matches!(event, RunEvent::Exit) {
             app.state::<AppState>().kill_children();
+        }
+        if main_gone {
+            if let Some(w) = app.get_webview_window(avatar::LABEL) {
+                let _ = w.destroy();
+            }
         }
     });
 }
