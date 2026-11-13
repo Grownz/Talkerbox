@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "puppet",
-  "description": "Avatar window (PuppetView.svelte): loads the shown character, its image and its stored AI fill, listens for avatar:// events and reports ready through puppet_ready. Nothing else: no other app command, no event emitting, no window, app or plugin API.",
+  "description": "Avatar window (PuppetView.svelte): loads the shown character, its image and its stored AI fill, listens for avatar:// events and reports ready through puppet_ready. Own title bar: drag and minimize (window API; these two accept a window label, so they could also drag or minimize the main window), close and dock into the main window (puppet_close, puppet_dock: both only act on the avatar window). Nothing else: no other app command, no event emitting, no other window, app or plugin API (avatar.rs has a test pinning this list).",
   "windows": ["puppet"],
-  "permissions": ["allow-avatar-load", "allow-avatar-image", "allow-avatar-fill", "allow-puppet-ready", "core:event:allow-listen", "core:event:allow-unlisten"]
+  "permissions": ["allow-avatar-load", "allow-avatar-image", "allow-avatar-fill", "allow-puppet-ready", "allow-puppet-close", "allow-puppet-dock", "core:window:allow-start-dragging", "core:window:allow-minimize", "core:event:allow-listen", "core:event:allow-unlisten"]
 }

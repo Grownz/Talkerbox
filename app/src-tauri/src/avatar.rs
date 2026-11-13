@@ -40,6 +40,26 @@ pub async fn puppet_open(app: AppHandle, transparent: bool) -> Result<(), String
     build(&app, transparent)
 }
 
+/// Recreates an OPEN window whose transparency differs; never opens one. The options effect calls this on every change,
+/// so it must not be able to bring back a window that was just closed (docking, closing with the X).
+#[tauri::command]
+pub async fn puppet_retransparent(app: AppHandle, transparent: bool) -> Result<(), String> {
+    if app.get_webview_window(LABEL).is_some() {
+        return puppet_open(app, transparent).await;
+    }
+    Ok(())
+}
+
+/// The avatar window's dock button: the main window shows the avatar in its sidebar and this window closes (bounds
+/// are saved as on any close). async: the window destroys itself from its own command.
+#[tauri::command]
+pub async fn puppet_dock(app: AppHandle) -> Result<(), String> {
+    // A pending transparency switch must not bring the window back after the dock.
+    state().pending = None;
+    app.emit_to("main", "avatar://dock", ()).map_err(|e| e.to_string())?;
+    puppet_close(app)
+}
+
 #[tauri::command]
 pub fn puppet_close(app: AppHandle) -> Result<(), String> {
     match app.get_webview_window(LABEL) {
@@ -59,7 +79,11 @@ fn build(app: &AppHandle, transparent: bool) -> Result<(), String> {
     let mut b = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("puppet.html".into()))
         .title("Talkerbox Avatar")
         .inner_size(360.0, 480.0)
-        .min_inner_size(120.0, 120.0)
+        .min_inner_size(160.0, 120.0)
+        // Own title bar in puppet.html (PuppetView), so it can fade out with a transparent background. Tauri keeps
+        // the edges resizable; no shadow on a transparent window, it would outline the invisible window.
+        .decorations(false)
+        .shadow(!transparent)
         .transparent(transparent);
     if let Some(saved) = config::load(app).avatar_bounds {
         let [x, y, w, h] = clamp_to_monitors(saved, &monitors(app));
@@ -98,6 +122,18 @@ fn build(app: &AppHandle, transparent: bool) -> Result<(), String> {
         _ => {}
     });
     Ok(())
+}
+
+/// Tells the main window when it is minimised or restored: WebView2 keeps a minimised webview running, and the
+/// docked avatar pauses its drawing on this.
+pub fn main_window_event(w: &tauri::Window, e: &WindowEvent) {
+    static MINIMIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if w.label() == "main" && matches!(e, WindowEvent::Resized(_)) {
+        let m = w.is_minimized().unwrap_or(false);
+        if MINIMIZED.swap(m, std::sync::atomic::Ordering::Relaxed) != m {
+            let _ = w.emit_to("main", "app://minimized", m);
+        }
+    }
 }
 
 /// Logical [x, y, w, h] of every monitor, primary first.
@@ -167,6 +203,28 @@ mod tests {
         assert_eq!(clamp_to_monitors([2500.0, 2000.0, 360.0, 480.0], &[PRIMARY]), [1560.0, 600.0, 360.0, 480.0]);
         // A window above the screen (title bar unreachable) comes down.
         assert_eq!(clamp_to_monitors([100.0, -400.0, 360.0, 480.0], &[PRIMARY]), [100.0, 0.0, 360.0, 480.0]);
+    }
+
+    /// The avatar window's capability; widening it is a security decision (app/README.md, Window permissions).
+    #[test]
+    fn puppet_capability_is_pinned() {
+        let cap: serde_json::Value = serde_json::from_str(include_str!("../capabilities/puppet.json")).unwrap();
+        assert_eq!(cap["windows"], serde_json::json!(["puppet"]));
+        assert_eq!(
+            cap["permissions"],
+            serde_json::json!([
+                "allow-avatar-load",
+                "allow-avatar-image",
+                "allow-avatar-fill",
+                "allow-puppet-ready",
+                "allow-puppet-close",
+                "allow-puppet-dock",
+                "core:window:allow-start-dragging",
+                "core:window:allow-minimize",
+                "core:event:allow-listen",
+                "core:event:allow-unlisten"
+            ])
+        );
     }
 
     #[test]

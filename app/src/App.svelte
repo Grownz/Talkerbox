@@ -1,15 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { currentMonitor, getCurrentWindow, PhysicalPosition, PhysicalSize, type Window } from '@tauri-apps/api/window'
   import { api, errText, type OllamaStatus, type Settings } from './lib/api'
-  import { avatar, puppetOpen, sendToPuppet, watchPuppet } from './lib/avatar.svelte'
+  import { avatar, docked, puppetRetransparent, sendToPuppet, undock, watchPuppet, type AvatarOptions } from './lib/avatar.svelte'
   import About from './lib/About.svelte'
   import AvatarCard from './lib/AvatarCard.svelte'
   import Btn from './lib/Btn.svelte'
   import Chat from './lib/Chat.svelte'
+  import { DOCK_MIN_WIDTH, dockNeedHeight, growWindow } from './lib/dockSize'
   import { fit } from './lib/fit'
   import Icon, { type IconName } from './lib/Icon.svelte'
   import Models from './lib/Models.svelte'
   import OllamaPathDialog from './lib/OllamaPathDialog.svelte'
+  import PuppetView from './lib/PuppetView.svelte'
   import { nextDelayMs, passMs } from './lib/statusAnim'
   import Terminal from './lib/Terminal.svelte'
   import ThemeSwitch from './lib/ThemeSwitch.svelte'
@@ -103,6 +106,7 @@
   onMount(() => {
     ;(async () => {
       settings = await api.getSettings()
+      avatar.docked = settings.avatarDocked
       await refresh()
       if (status && !status.running) {
         if (!status.exe) showPathDialog = true
@@ -110,12 +114,7 @@
       }
     })()
     const timer = setInterval(refresh, 5000)
-    const unwatch = watchPuppet(() => ({
-      bg: settings?.avatarBg ?? 'normal',
-      opacity: settings?.avatarOpacity ?? 100,
-      character: settings?.avatarActive ?? null,
-      rev: avatar.rev,
-    }))
+    const unwatch = watchPuppet(avatarOptions)
     return () => {
       clearInterval(timer)
       unwatch()
@@ -129,17 +128,93 @@
     api.saveSettings(snapshot).catch((e) => (error = `Saving settings failed: ${errText(e)}`))
   })
 
+  const avatarOptions = (): AvatarOptions => ({
+    bg: settings?.avatarBg ?? 'normal',
+    opacity: settings?.avatarOpacity ?? 100,
+    character: settings?.avatarActive ?? null,
+    rev: avatar.rev,
+  })
+
+  // Docking state is changed by the avatar switch, the window's dock button and undocking; it is restored at start.
+  $effect(() => {
+    if (settings) settings.avatarDocked = avatar.docked
+  })
+
   // Live avatar options; a transparency change makes the backend recreate the open window.
   $effect(() => {
-    if (!settings || !avatar.open) return
-    const { avatarBg: bg, avatarOpacity: opacity, avatarActive: character } = settings
-    sendToPuppet('avatar://options', { bg, opacity, character, rev: avatar.rev })
-    puppetOpen(bg === 'transparent').catch((e) => (error = errText(e)))
+    if (!settings || !(avatar.open || avatar.docked)) return
+    const opts = avatarOptions()
+    sendToPuppet('avatar://options', opts)
+    if (avatar.open && !avatar.docked) puppetRetransparent(opts.bg === 'transparent').catch((e) => (error = errText(e)))
+  })
+
+  // ---------- docked avatar: the window grows so the full sidebar fits ----------
+  let rail: HTMLElement | undefined = $state()
+
+  /** Inner height (CSS px) the sidebar needs with the docked avatar at full size, measured in the current layout. */
+  function railNeed(): number {
+    if (!rail) return 0
+    const cs = getComputedStyle(rail)
+    const px = (v: string) => parseFloat(v) || 0
+    const kids = [...rail.children] as HTMLElement[]
+    // The spacer only fills leftover room (0); the dock counts at its full 3:4 size from the sidebar width.
+    const others = kids
+      .filter((el) => !el.classList.contains('dock'))
+      .map((el) => (el.classList.contains('spacer') ? 0 : el.offsetHeight))
+    const width = rail.offsetWidth - px(cs.paddingLeft) - px(cs.paddingRight) - px(cs.borderLeftWidth) - px(cs.borderRightWidth)
+    return dockNeedHeight(others, px(cs.rowGap), px(cs.paddingTop) + px(cs.paddingBottom), width)
+  }
+
+  /** Grows the window (physical px, inside the monitor work area) to an inner size of at least need (CSS px). */
+  async function growTo(win: Window, needW: number, needH: number): Promise<boolean> {
+    const [mon, scale, outer, inner, pos] = await Promise.all([
+      currentMonitor(),
+      win.scaleFactor(),
+      win.outerSize(),
+      win.innerSize(),
+      win.outerPosition(),
+    ])
+    if (!mon) return false
+    const frame = { w: outer.width - inner.width, h: outer.height - inner.height }
+    const area = mon.workArea
+    const next = growWindow(
+      { x: pos.x, y: pos.y, w: outer.width, h: outer.height },
+      frame,
+      { x: area.position.x, y: area.position.y, w: area.size.width, h: area.size.height },
+      { w: Math.ceil(needW * scale), h: Math.ceil(needH * scale) },
+    )
+    if (!next) return false
+    const resized = new Promise((r) => {
+      addEventListener('resize', r, { once: true })
+      setTimeout(r, 500)
+    })
+    await win.setSize(new PhysicalSize(next.w - frame.w, next.h - frame.h)) // setSize sets the inner size
+    if (next.x !== pos.x || next.y !== pos.y) await win.setPosition(new PhysicalPosition(next.x, next.y))
+    await resized
+    return true
+  }
+
+  /** On docking (and a docked start): room for the full-width sidebar with every label and the whole avatar. */
+  async function fitDockedWindow() {
+    const win = getCurrentWindow()
+    if ((await win.isMaximized()) || (await win.isFullscreen()) || (await win.isMinimized())) return
+    // Width first: below it the sidebar is narrower or the icon rail, so the height is measured afterwards, and once
+    // more after growing (short windows have tighter spacing, `max-height: 600px` in app.css). It only ever grows.
+    const settle = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+    if (await growTo(win, DOCK_MIN_WIDTH, 0)) await settle()
+    for (let i = 0; i < 3 && (await growTo(win, DOCK_MIN_WIDTH, railNeed())); i++) await settle()
+  }
+
+  // Reads only settings and avatar.docked; the async work writes nothing they depend on.
+  $effect(() => {
+    if (settings && avatar.docked)
+      fitDockedWindow().catch((e) => (error = `Could not resize the window for the docked avatar: ${errText(e)}`))
   })
 
   const pathTitle = $derived(
     status?.exe ? `Choose a different ollama.exe (current: ${status.exe})` : 'Choose where ollama.exe is installed',
   )
+  const undockNow = () => settings && undock(settings.avatarBg).catch((e) => (error = errText(e)))
   const logTitle = 'Show the Ollama server output (read-only log of the server Talkerbox started)'
 </script>
 
@@ -167,7 +242,7 @@
 {/snippet}
 
 <div class="shell">
-  <nav class="rail" aria-label="Main">
+  <nav class="rail" aria-label="Main" bind:this={rail}>
     <div class="rail-brand"><span class="logo-tile"><Icon name="logo" /></span><span class="rl">Talkerbox</span></div>
     <div class="nav">
       {#each NAV as n (n.id)}
@@ -181,12 +256,25 @@
       {/each}
     </div>
     <span class="spacer"></span>
+    {#if settings && avatar.docked}
+      <div
+        class="dock"
+        role="button"
+        tabindex="0"
+        title="Avatar (docked): double-click to open it in its own window"
+        aria-label="Avatar, docked. Double-click or press Enter to open it in its own window"
+        ondblclick={undockNow}
+        onkeydown={(e) => e.key === 'Enter' && undockNow()}
+      >
+        <PuppetView docked listen={docked.listen} ready={() => docked.emit('avatar://options', avatarOptions())} />
+      </div>
+    {/if}
     <section class="rail-status" aria-label="Ollama server">
       <span class="cap">Ollama</span>
       {@render ledButton(true)}
-      <div class="acts">
+      <div class="acts fit" use:fit>
         <Btn icon="terminal" label="Log" title={logTitle} onclick={() => (showTerminal = true)} />
-        <Btn icon="folder" label="Path…" title={pathTitle} onclick={() => (showPathDialog = true)} />
+        <Btn icon="folder" label="Path…" p={1} title={pathTitle} onclick={() => (showPathDialog = true)} />
       </div>
     </section>
     <div class="rail-foot"><ThemeSwitch /></div>

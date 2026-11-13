@@ -20,6 +20,8 @@ against a primary source.
 | Svelte runtime | 5.57.3 | MIT | Copyright (c) 2016-2025 Svelte Contributors | bundled (in the frontend) |
 | @tauri-apps/api, @tauri-apps/plugin-dialog | 2.12.4, 2.8.4 | Apache-2.0 OR MIT | Copyright (c) 2017 - Present Tauri Apps Contributors; The Tauri Programme in the Commons Conservancy | bundled (in the frontend) |
 | flag-icons | 7.6.0 | MIT | Copyright (c) 2013 Panayiotis Lipiridis | bundled (in the frontend) |
+| markdown-it (renders chat replies) with mdurl, linkify-it, uc.micro, punycode.js | 15.0.3; mdurl 2.1.0, linkify-it 6.1.0, uc.micro 3.0.0, punycode.js 2.3.1 | MIT | Copyright (c) 2014 Vitaly Puzrin, Alex Kocharin (markdown-it, mdurl); Copyright (c) 2015 Vitaly Puzrin (linkify-it); Copyright Mathias Bynens (uc.micro, punycode.js) | bundled (in the frontend) |
+| entities (HTML entity tables, used by markdown-it) | 8.1.0 | BSD-2-Clause (section 6.4) | Copyright (c) Felix Böhm | bundled (in the frontend) |
 
 No GPL or LGPL crate is part of the Windows dependency tree. A per-crate listing can be produced with
 `cargo metadata --filter-platform x86_64-pc-windows-msvc` (or `cargo about`); each crate's own licence file is in its
@@ -278,7 +280,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 ### 6.4 BSD 2-Clause License
 
-Applies to the eSpeak NG `getopt` compatibility code (NetBSD) and is one of the two licence options of packaging.
+Applies to the eSpeak NG `getopt` compatibility code (NetBSD), to `entities` (Copyright (c) Felix Böhm) in the app frontend, and is one of the two licence options of packaging.
 
 ```text
 Copyright (c) <year> <owner> 

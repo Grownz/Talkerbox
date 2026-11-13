@@ -1,24 +1,54 @@
 <script lang="ts">
-  // Avatar window: plays mouth envelopes and shapes from the main window on its own rAF clock; poseGen.ts turns them
-  // into mouth, blink, sway and gestures.
-  import { listen } from '@tauri-apps/api/event'
+  // The avatar: plays mouth envelopes and shapes from the main window on its own rAF clock; poseGen.ts turns them
+  // into mouth, blink, sway and gestures. Runs in the avatar window (with its own title bar) and, `docked`, in the
+  // main window's sidebar, where `listen` is the in-page bus (avatar.svelte.ts) instead of Tauri events.
+  import { listen as tauriListen } from '@tauri-apps/api/event'
+  import { getCurrentWindow } from '@tauri-apps/api/window'
   import { onMount } from 'svelte'
-  import { api } from './api'
-  import type { AvatarOptions } from './avatar.svelte'
+  import { api, errText } from './api'
+  import { puppetClose, type AvatarOptions } from './avatar.svelte'
   import { EnvelopeQueue, type AvatarSentence } from './avatarQueue'
   import { DemoPuppet, type Puppet } from './demoPuppet'
+  import Icon from './Icon.svelte'
   import { PoseGen } from './poseGen'
   import { RigPuppet } from './rigPuppet'
+
+  type Listen = <T>(event: string, cb: (e: { payload: T }) => void) => Promise<() => void>
+  let {
+    docked = false,
+    listen = tauriListen,
+    ready = () => void api.puppetReady(),
+  }: { docked?: boolean; listen?: Listen; ready?: () => void } = $props()
 
   let opts = $state<AvatarOptions>({ bg: 'normal', opacity: 100, character: null, rev: 0 })
   let host: HTMLDivElement
 
   // Transparent mode: the window itself is transparent, so html/body must not paint the theme background.
   $effect(() => {
+    if (docked) return
     const clear = opts.bg === 'transparent'
     document.documentElement.style.background = clear ? 'transparent' : ''
     document.body.style.background = clear ? 'transparent' : ''
   })
+
+  // Title bar: always shown on an opaque window; with a see-through background it fades out and comes back while
+  // the pointer is over the window (or a bar button has keyboard focus).
+  const autoHide = $derived(opts.bg === 'transparent' && opts.opacity < 100)
+  let hover = $state(false)
+  let hideTimer: ReturnType<typeof setTimeout> | undefined
+  const enter = () => {
+    clearTimeout(hideTimer)
+    hover = true
+  }
+  const leave = () => {
+    clearTimeout(hideTimer)
+    hideTimer = setTimeout(() => (hover = false), 600)
+  }
+  const drag = (e: MouseEvent) => {
+    if (e.button === 0 && !(e.target as Element).closest('button')) void getCurrentWindow().startDragging()
+  }
+  // Errors cannot be shown in this window; the console is the only place for them.
+  const report = (what: string) => (e: unknown) => console.warn(`${what} failed: ${errText(e)}`)
 
   onMount(() => {
     let puppet: Puppet = new DemoPuppet(host)
@@ -56,26 +86,34 @@
     const still = matchMedia('(prefers-reduced-motion: reduce)')
     const gen = new PoseGen(Math.random, performance.now())
     let raf = 0
+    let last = -Infinity
     function frame(t: number) {
       const m = queue.sample(now())
-      // Reduced motion: no sway and no gestures; the mouth and blinking still follow.
-      puppet.frame(gen.step(t, m.level, still.matches, m), still.matches ? 0 : t)
+      // Docked, the figure shares the main window's thread with the chat: about 30 fps while it talks, 15 when it
+      // only blinks and sways (barely visible at sidebar size). The window has its own process and runs at full rate.
+      if (!docked || t - last >= (m.level > 0.02 ? 33 : 66)) {
+        last = t
+        // Reduced motion: no sway and no gestures; the mouth and blinking still follow.
+        puppet.frame(gen.step(t, m.level, still.matches, m), still.matches ? 0 : t)
+      }
       raf = requestAnimationFrame(frame)
     }
-    // No drawing while the window is hidden or minimised; the envelope queue keeps its own clock. WebView2 does not
-    // always report a minimised window as hidden (wry does not hide the webview), so the Rust side tells us too.
+    // No drawing while the window is hidden or minimised, or the figure has no room (docked in a short sidebar); the
+    // envelope queue keeps its own clock. WebView2 does not always report a minimised window as hidden (wry does not
+    // hide the webview), so the Rust side tells us too (for the main window through `app://minimized`).
     let minimized = false
     const run = () => {
       cancelAnimationFrame(raf)
-      raf = document.hidden || minimized ? 0 : requestAnimationFrame(frame)
+      raf = document.hidden || minimized || host.clientWidth < 4 || host.clientHeight < 4 ? 0 : requestAnimationFrame(frame)
     }
     document.addEventListener('visibilitychange', run)
+    const ro = new ResizeObserver(run)
+    ro.observe(host)
     run()
-    const ready = () => api.puppetReady()
     const off = [
       listen<AvatarSentence>('avatar://sentence', (e) => {
         // Delivery latency between the windows; the envelope itself is timed by startMs, not by arrival.
-        if (e.payload.sentMs) document.body.dataset.latencyMs = (now() - e.payload.sentMs).toFixed(1)
+        if (e.payload.sentMs) host.dataset.latencyMs = (now() - e.payload.sentMs).toFixed(1)
         queue.push(e.payload)
       }),
       listen<{ source?: string } | null>('avatar://stop', (e) => queue.clear(e.payload?.source)),
@@ -99,6 +137,8 @@
     void Promise.all(off).then(ready)
     return () => {
       cancelAnimationFrame(raf)
+      clearTimeout(hideTimer)
+      ro.disconnect()
       document.removeEventListener('visibilitychange', run)
       puppet.destroy?.()
       URL.revokeObjectURL(imageUrl)
@@ -109,21 +149,111 @@
 
 <div
   class="stage"
-  style:background={opts.bg === 'green'
-    ? '#00ff00'
-    : opts.bg === 'transparent'
-      ? `color-mix(in srgb, var(--win-bg) ${opts.opacity}%, transparent)`
-      : 'var(--win-bg)'}
+  class:docked
+  class:barred={!docked && !autoHide}
+  role="presentation"
+  onmouseenter={enter}
+  onmouseleave={leave}
+  style:background={docked
+    ? 'transparent'
+    : opts.bg === 'green'
+      ? '#00ff00'
+      : opts.bg === 'transparent'
+        ? `color-mix(in srgb, var(--win-bg) ${opts.opacity}%, transparent)`
+        : 'var(--win-bg)'}
 >
-  <div class="figure" bind:this={host} style:opacity={opts.bg === 'transparent' ? 1 : opts.opacity / 100}></div>
+  {#if !docked}
+    <!-- svelte-ignore a11y_no_static_element_interactions (dragging the window is mouse-only, like a native title bar) -->
+    <header class="tb" class:auto={autoHide} class:show={hover} onmousedown={drag}>
+      <span class="tt"><Icon name="figure" />Avatar</span>
+      <button type="button" class="tbb" title="Dock into the main window" aria-label="Dock into the main window" onclick={() => api.puppetDock().catch(report('Docking'))}
+        ><Icon name="dock" /></button
+      >
+      <button type="button" class="tbb" title="Minimize" aria-label="Minimize" onclick={() => getCurrentWindow().minimize().catch(report('Minimizing'))}
+        ><Icon name="minus" /></button
+      >
+      <button type="button" class="tbb close" title="Close the avatar window" aria-label="Close" onclick={() => puppetClose().catch(report('Closing'))}
+        ><Icon name="x" /></button
+      >
+    </header>
+  {/if}
+  <div class="figure" bind:this={host} style:opacity={docked || opts.bg === 'transparent' ? 1 : opts.opacity / 100}></div>
 </div>
 
 <style>
   .stage {
+    position: relative;
     height: 100%;
     padding: 8px;
   }
+  .stage.barred {
+    padding-top: 40px;
+  }
+  .stage.docked {
+    padding: 0;
+  }
   .figure {
     height: 100%;
+  }
+  .tb {
+    position: absolute;
+    inset: 0 0 auto;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    height: 32px;
+    padding-left: 10px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+    user-select: none;
+    transition: opacity 0.2s var(--ease);
+  }
+  /* Over a see-through background: hidden until hovered, then slightly translucent so the figure shows through. */
+  .tb.auto {
+    opacity: 0;
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+  }
+  .tb.auto.show,
+  .tb.auto:focus-within {
+    opacity: 1;
+  }
+  .tt {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .tt :global(.i) {
+    width: 16px;
+    height: 16px;
+    flex: none;
+  }
+  .tbb {
+    width: 40px;
+    min-width: 0;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-2);
+  }
+  .tbb :global(.i) {
+    width: 16px;
+    height: 16px;
+  }
+  .tbb:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+  .tbb.close:hover {
+    background: #c42b1c;
+    color: #fff;
   }
 </style>

@@ -11,6 +11,8 @@ use tauri::{AppHandle, Manager};
 pub struct Settings {
     pub ollama_path: Option<String>,
     pub last_model: Option<String>,
+    /// Let thinking models reason before answering (their default); false sends `think: false` to Ollama.
+    pub think: bool,
     pub voice: Option<String>,
     pub tts_enabled: bool,
     pub tts_speed: f32,
@@ -34,6 +36,8 @@ pub struct Settings {
     pub avatar_bounds: Option<[f64; 4]>,
     /// Id of the character shown in the avatar window; None = built-in demo figure.
     pub avatar_active: Option<String>,
+    /// The avatar is shown in the main window's sidebar instead of its own window (restored at start).
+    pub avatar_docked: bool,
 }
 
 impl Default for Settings {
@@ -41,6 +45,7 @@ impl Default for Settings {
         Self {
             ollama_path: None,
             last_model: None,
+            think: true,
             voice: None,
             tts_enabled: true,
             tts_speed: 1.0,
@@ -54,6 +59,7 @@ impl Default for Settings {
             avatar_opacity: 100,
             avatar_bounds: None,
             avatar_active: None,
+            avatar_docked: false,
         }
     }
 }

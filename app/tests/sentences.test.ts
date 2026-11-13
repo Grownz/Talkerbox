@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { chunkLong, MAX_CHUNK, splitSentences } from '../src/lib/sentences.ts'
+import { chunkLong, MAX_CHUNK, speakable, splitSentences } from '../src/lib/sentences.ts'
 
 test('English sentences split after terminators and keep the unfinished tail', () => {
   assert.deepEqual(splitSentences('Hello there. How are you? I am "fine." And'), {
@@ -68,4 +68,20 @@ test('inline code and backticks inside a line are kept for the markdown cleanup'
   assert.deepEqual(speak('Use `npm test` to run it. '), ['Use `npm test` to run it.'])
   assert.deepEqual(speak('`x` is a variable. '), ['`x` is a variable.'])
   assert.deepEqual(speak('Indented:\n  ```\n  code\n  ```\nEnd.'), ['Indented:', 'End.'])
+})
+
+test('speakable drops Markdown markers, code, URLs and tags but keeps the words', () => {
+  assert.equal(speakable('## **Bold** and *italic* with `code`'), 'Bold and italic with code')
+  assert.equal(speakable('- first item'), 'first item')
+  assert.equal(speakable('> quoted text'), 'quoted text')
+  assert.equal(speakable('See [the docs](https://example.com/a) now.'), 'See the docs now.')
+  assert.equal(speakable('Look: ![a cat](https://e.x/c.png)'), 'Look: a cat')
+  assert.equal(speakable('Visit https://example.com/path?q=1 or <https://e.x>.'), 'Visit or .')
+  assert.equal(speakable('Text<br>more <b>bold</b>'), 'Text more bold')
+  assert.equal(speakable('| a | b |'), 'a b')
+  assert.equal(speakable('|---|:--:|'), '')
+  assert.equal(speakable('---'), '')
+  assert.equal(speakable('Before ```js\nlet a = 1\n``` after'), 'Before after')
+  // Ordinary punctuation and numbers stay.
+  assert.equal(speakable('It costs 3-4 euros, 5 < 6.'), 'It costs 3-4 euros, 5 < 6.')
 })

@@ -11,7 +11,7 @@
   import { ask, open } from '@tauri-apps/plugin-dialog'
   import { onMount } from 'svelte'
   import { api, errText, formatBytes, type Settings } from './api'
-  import { avatar, puppetOpen, sendToPuppet, toggleAvatar } from './avatar.svelte'
+  import { avatar, avatarShown, puppetOpen, sendToPuppet, toggleAvatar } from './avatar.svelte'
   import Btn from './Btn.svelte'
   import type { AvatarSentence } from './avatarQueue'
   import { testEnvelope } from './envelope'
@@ -112,7 +112,7 @@
     testSpeaker.unlock() // within the click, so audio may play
     testing = true
     try {
-      if (!avatar.open) {
+      if (!avatarShown()) {
         await puppetOpen(settings.avatarBg === 'transparent')
         for (let i = 0; i < 50 && !avatar.open; i++) await new Promise((r) => setTimeout(r, 100))
       }
@@ -174,9 +174,13 @@
       type="button"
       class="switch"
       role="switch"
-      aria-checked={avatar.open}
+      aria-checked={avatarShown()}
       aria-label="Avatar window"
-      title={avatar.open ? 'Close the avatar window' : 'Open a window with a figure that moves its mouth while replies are spoken'}
+      title={avatar.docked
+        ? 'Hide the avatar docked in the sidebar'
+        : avatar.open
+          ? 'Close the avatar window'
+          : 'Open a window with a figure that moves its mouth while replies are spoken'}
       onclick={() => toggleAvatar(settings.avatarBg).catch((e) => onError(errText(e)))}
       ><span class="track"></span><span class="swl">Avatar window</span></button
     >
@@ -210,7 +214,11 @@
       </span>
     </label>
   </div>
-  <p class="help">Transparency can only be set when the window is created, so switching to or from Transparent reopens it.</p>
+  <p class="help">
+    Transparency can only be set when the window is created, so switching to or from Transparent reopens it. Below 100 %
+    opacity a transparent window's title bar shows only while the pointer is over it. The dock button in the title bar
+    moves the avatar into the sidebar (on the sidebar background); double-click it there to get the window back.
+  </p>
 </div>
 
 <div class="card">

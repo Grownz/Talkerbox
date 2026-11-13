@@ -22,7 +22,8 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   "Start Ollama automatically" switch on the Server page turns this off (setting `ollamaAutostart`, default on).
 - **Layout**: a left sidebar with Chat, Models, Speech, Avatar and Server pages, the Ollama status, the theme switch
   and, at the very bottom, an "i" button for the About & licences page. Below 1024 px window width it collapses to a
-  64 px icon rail. Toolbar buttons shorten their labels, then become icons (tooltip and accessible name stay) when
+  64 px icon rail. In the Ollama box, "Log" and "Path…" share the width as a `.fit` row ("Log" becomes its icon
+  first), and the status pill ends in an ellipsis (the version gives way first). Toolbar buttons shorten their labels, then become icons (tooltip and accessible name stay) when
   space runs out; text inputs shrink first (in the chat header only to a usable minimum, so "New chat" becomes "+"
   first). The voice picker keeps its flag and voice name: in a narrow header (container query) it drops the gender
   and the arrow, and a long name ends in an ellipsis. The window cannot be made smaller
@@ -36,6 +37,38 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
 - **Light/dark mode**: follows the Windows setting by default. The sun/moon switch at the bottom of the sidebar
   overrides it; the choice is kept in the webview's localStorage.
 - **Chat**: streamed replies (`/api/chat`), model picker (`/api/tags`), history kept in memory, stop button.
+- **Markdown replies** (`src/lib/markdown.ts`, `src/lib/Reply.svelte`): a cheap check (a line starting with `#`, `-`,
+  `*`, `1.`, `>`, a fence or `|...|`, or `**bold**`, `` `code` `` or `[text](url)` anywhere; bounded spans, no
+  backtracking blow-up) picks Markdown; otherwise the reply is escaped plain text with its line breaks. Rendering uses
+  markdown-it 15.0.3 with `html: false` (raw HTML is never parsed, it stays escaped text; dangerous link schemes are
+  not links) and `breaks: true`; links are rendered as label plus target in plain text (no `<a>`, the webview never
+  navigates; `open_link` is not used, its allow-list is unchanged) and images as `[image: alt]` (no `<img>`, nothing
+  is loaded, the CSP is unchanged). Code blocks get a Copy button (`navigator.clipboard`). Replies over 100 000
+  characters, or anything the parser throws on, are shown as plain text. marked was tried first and dropped: its
+  emphasis parsing is quadratic (8 kB of unmatched `**` took 0.5 s, 80 kB over a minute); markdown-it stays linear.
+  While streaming a reply is redrawn at most every 90 ms, or every 4x its own render cost if that is longer, and
+  once more when it is complete; the chat scrolls to the end after each redraw. Measured in the WebView harness on a
+  Ryzen 7 7700X: a 20 kB Markdown reply parses in about 7.5 ms and takes about 33 ms to apply and lay out; streaming
+  20 kB in 2500 chunks made 133 redraws in 12.8 s with no long task (> 50 ms) and at most 11 ms event-loop lag.
+  `tests/markdown.test.ts` checks hostile input against a tag and attribute allow-list (script, event handlers,
+  `javascript:`/`data:` links, remote and data images, nested HTML, huge and deeply nested input). TTS reads the raw
+  text through `speakable` (`src/lib/sentences.ts`), which drops fences, tags, link/image targets, URLs, bullets,
+  rules and Markdown markers.
+- **Thinking models** (`src-tauri/src/ollama.rs`, `src/lib/Reply.svelte`): Ollama (0.40.15, Qwen3.5 4B, `think`
+  omitted) streams the reasoning in `message.thinking` first (`content` is `""` meanwhile), then the answer in
+  `message.content`; measured: first thinking token after 0.06-0.24 s, first answer token after 2.3-3.6 s, with
+  `think: false` the first answer token after 0.07 s. The backend sends thinking over a second channel
+  (`chat`'s `on_thinking`), never into the history (the stream delta is its own struct, `ChatMessage` has no thinking
+  field). `<think>…</think>` at the start of `content` (older Ollama, some templates) is split off too, also when a
+  tag is cut across chunks. The `think` setting (default true = model default) sends `"think": false` only when the
+  model's `/api/show` `capabilities` contain `"thinking"` (cached per model until the model list reloads); Ollama
+  answers `think: true` for other models with HTTP 400 "does not support thinking", so on that error the request is
+  retried once without `think`. The header's Thinking button only appears for such models. The reply shows
+  "Thinking… N s" with the reasoning (plain escaped text, throttled like the answer, scrolls past 14 lines) and
+  collapses to "Thought for N s" once the answer starts; it is not spoken. `src-tauri/tests/fixtures/ollama-thinking-stream.ndjson`
+  holds a few real chunks; `cargo test chat_real -- --ignored` with `TALKERBOX_OLLAMA` and `TALKERBOX_THINK_MODEL`
+  runs against a live server. In the harness, 1700 thinking tokens/s with the reasoning expanded gave no long task and
+  no slow input event while typing.
 - **Models**: pull from a HuggingFace link, `hf.co/user/repo[:quant]` or a library name (`/api/pull`, with progress).
   You can also import a `.gguf` from any direct URL: it downloads with resume, is uploaded through `/api/blobs`, and is
   imported through `/api/create` with `files`. The file goes to `gguf\<first 16 hex chars of sha256(url)>\`. A retry
@@ -78,7 +111,23 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   (`src/lib/rigPuppet.ts`, `src/lib/rigRender.ts`), fitted into the window, sharp on high-DPI screens; the cut-out
   and part textures are prepared once per load, so each frame only moves them, and drawing pauses while the window is
   hidden or minimised (the Rust side reports minimising with `avatar://minimized`, because WebView2 keeps running a
-  minimised webview). Only the parts a character has move: without parts the whole figure sways and bobs with the speech; if the
+  minimised webview). The window has no native frame (`decorations: false`, so the title bar can be transparent):
+  `PuppetView` draws a 32 px title bar with dock, minimise and close (drag via `startDragging`, Tauri keeps the edges
+  resizable, shadow only on opaque windows, minimum 160 x 120). On a transparent background below 100 % opacity the
+  bar fades out and fades in while the pointer is over the window (out 0.6 s after it leaves, also shown while a bar
+  button has focus); otherwise it is always shown above the figure. **Docking**: the dock button calls `puppet_dock`,
+  which emits `avatar://dock` to the main window and closes the avatar window (bounds saved as on any close). The main
+  window then mounts the same `PuppetView` in the sidebar above the Ollama box (`docked`; full sidebar width, 3:4,
+  at most 45 % of the window height, at least 64 px; on the 64 px icon rail it scales down with the rail, so the
+  figure stays visible as a speaking indicator). On docking and on a docked start, `fitDockedWindow` (App.svelte) grows the main window so nothing is reduced: at least 1289 px inner width (`.rail` is `clamp(184px, 18vw, 232px)`, so the full 232 px needs 18vw >= 232; below 1024 px it is the icon rail), then the height the sidebar measures with the avatar at its full 3:4 size (and at least that size / 0.45 for the 45vh cap), measured again after growing because short windows use tighter spacing (about 798 px at 100 %). `growWindow` (`src/lib/dockSize.ts`, pure, tested) works in physical pixels (needs times the scale factor, frame = outer minus inner size): it never shrinks, clamps to the monitor work area and moves the window back inside it; maximised, fullscreen and minimised windows are left alone. This needs `core:window:allow-set-size` and `core:window:allow-set-position` for the main window (`capabilities/default.json`; the getters come with `core:default`). Its events come from an in-page bus (`src/lib/localBus.ts`):
+  `sendToPuppet` emits to the window while it is open and to the bus while docked, with the same names and payloads,
+  so lip-sync, stop, options and character switching need no window roundtrip. The docked view uses the sidebar
+  background (no green screen, transparency or opacity), pauses while the main window is minimised (the Rust side
+  emits `app://minimized`, forwarded to the bus) or the figure has no room, and respects reduced motion like the
+  window. Double-click (or Enter) on it undocks: the docked view goes away and `puppet_open` opens the window with
+  the saved bounds. `avatarDocked` (settings) is restored at start; the Avatar switch turns a docked avatar off (and
+  opens the window when it is off); closing the window with its X turns the avatar off, as before. Only the parts a
+  character has move: without parts the whole figure sways and bobs with the speech; if the
   image or `rig.json` cannot be loaded, the demo figure is shown. "Test speech" on the Avatar page opens the avatar
   window and speaks a sample sentence with the selected voice (without running speech it plays a silent loudness
   pattern), so you can watch the avatar without chatting. Background: theme, green screen (#00ff00) or transparent
@@ -275,7 +324,7 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   open elsewhere fails the rename and leaves the model intact; a leftover is deleted on the next status refresh.
 - **Settings** (`settings.json` in the app config dir, `%APPDATA%\com.talkerbox.app`): Ollama path, last model, voice,
   TTS on/off and speed, speech input language, idle time and microphone, Ollama auto-start, avatar background,
-  opacity, window bounds and selected character.
+  opacity, window bounds, selected character and whether the avatar is docked.
 
 Downloads, logs and models are stored in the local app data dir (`%LOCALAPPDATA%\com.talkerbox.app`): `gguf\` (temporary),
 `tts\`, `stt\` (speech input models, removable on the Speech page), `sam\` (smart select: `onnxruntime.dll` and the two MobileSAM `.onnx` files, about 64 MB;
@@ -305,6 +354,14 @@ cd src-tauri; cargo clippy --all-targets; cargo test   # Rust lints (warning-fre
 
 Version numbers live in `package.json`, `package-lock.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and
 the `talkerbox` entry of `src-tauri/Cargo.lock`; a release bumps all five.
+
+App icon (`src-tauri/icons/`): the sidebar logo (`.logo-tile` with the `logo` glyph from `Icon.svelte`: a #2563c9
+rounded square, radius 9/32, the white glyph at 18/32 with stroke 1.75) rendered at 1024 px and turned into the
+PNGs and `icon.icns` with `npx tauri icon <png>` (the Android, iOS and Windows Store files it also writes are not
+kept). `icon.ico` holds 16, 20, 24, 32, 48, 64, 128 and 256 px; at 16 to 24 px it uses a simplified glyph (only the
+three bars, heavier), because the outline turns to mush there. Windows caches icons: after replacing them, a dev
+build may show the old icon until the exe is rebuilt (`cargo clean -p talkerbox`) or the icon cache is refreshed.
+`public/favicon.svg` is the same logo.
 
 ## TTS sidecar
 
@@ -491,8 +548,12 @@ them.
 - `capabilities/puppet.json`, window `puppet`: only what `puppet.html` and its imports call: `allow-avatar-load`,
   `allow-avatar-image`, `allow-avatar-fill` (show the selected character and its stored AI fill),
   `allow-puppet-ready` (tells the main window it is ready; the backend emits `avatar://ready`, so the page needs no
-  emit permission) and `core:event:allow-listen` / `allow-unlisten` for the `avatar://` events. It cannot call any other app command, emit events, or use window,
-  app, path, webview or dialog APIs.
+  emit permission), `core:event:allow-listen` / `allow-unlisten` for the `avatar://` events, and for its own title
+  bar `allow-puppet-dock` and `allow-puppet-close` (both only act on the avatar window) plus
+  `core:window:allow-start-dragging` and `core:window:allow-minimize` (these two take a window label, so they could
+  also drag or minimise the main window; nothing worse). It cannot call any other app command, emit events, or use
+  other window, app, path, webview or dialog APIs. A Rust test (`avatar::tests::puppet_capability_is_pinned`) pins
+  the list.
 
 A new command needs no permission work for the main window; if the avatar window needs it, add its `allow-` entry
 to `puppet.json`.

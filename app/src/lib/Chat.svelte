@@ -14,19 +14,21 @@
   } from './api'
   import { finalRate, formatRate, liveRate } from './rate'
   import { Speaker } from './speaker'
-  import { avatar, toggleAvatar } from './avatar.svelte'
+  import { avatar, avatarShown, toggleAvatar } from './avatar.svelte'
   import Btn from './Btn.svelte'
   import DeviceMenu from './DeviceMenu.svelte'
   import { fit } from './fit'
   import Icon from './Icon.svelte'
+  import Reply from './Reply.svelte'
   import VoicePicker from './VoicePicker.svelte'
 
   let { settings = $bindable(), running, modelsVersion }: { settings: Settings; running: boolean; modelsVersion: number } =
     $props()
 
   let models = $state<ModelInfo[]>([])
-  // `tps`: tokens/s shown in the reply box (live while streaming, final afterwards).
-  let messages = $state<(ChatMessage & { tps?: number })[]>([])
+  // `tps`: tokens/s shown in the reply box (live while streaming, final afterwards). `thinking`: the model's reasoning
+  // (display only: never spoken, never sent back); `thinkStart`/`thinkEnd`: its first thinking and first answer token.
+  let messages = $state<(ChatMessage & { tps?: number; thinking?: string; thinkStart?: number; thinkEnd?: number })[]>([])
   let input = $state('')
   let opId = $state<string | null>(null)
   let error = $state('')
@@ -80,11 +82,26 @@
     )
   })
 
-  // Keep the newest text visible while streaming.
+  // Keep the newest text visible while streaming: on new messages here, and after each (throttled) reply render.
+  const scrollToEnd = () => log?.scrollTo({ top: log.scrollHeight })
   $effect(() => {
     void messages.length
-    void messages.at(-1)?.content
-    tick().then(() => log?.scrollTo({ top: log.scrollHeight }))
+    tick().then(scrollToEnd)
+  })
+
+  // The thinking switch is only offered for models that report the "thinking" capability (cached by the backend).
+  let canThink = $state(false)
+  $effect(() => {
+    const model = settings.lastModel
+    void models
+    canThink = false
+    if (!running || !model) return
+    let live = true
+    api.modelCapabilities(model).then(
+      (c) => live && (canThink = c.includes('thinking')),
+      () => {},
+    )
+    return () => (live = false)
   })
 
   async function loadModels() {
@@ -355,11 +372,24 @@
       if (r !== null) reply.tps = r
     }, 1000)
     try {
-      const res = await api.chat(id, model, history, (t) => {
-        stamps.push(performance.now())
-        reply.content += t
-        if (feeding === reply) speaker.feed(t)
-      })
+      const res = await api.chat(
+        id,
+        model,
+        history,
+        (t) => {
+          stamps.push(performance.now())
+          if (reply.thinkStart !== undefined) reply.thinkEnd ??= performance.now()
+          reply.content += t
+          if (feeding === reply) speaker.feed(t)
+        },
+        {
+          think: settings.think,
+          onThinking: (t) => {
+            reply.thinkStart ??= performance.now()
+            reply.thinking = (reply.thinking ?? '') + t
+          },
+        },
+      )
       if (feeding === reply) speaker.flush()
       reply.tps = finalRate(res.evalCount, res.evalDuration, stamps) ?? undefined
     } catch (e) {
@@ -367,6 +397,7 @@
       if (!reply.content) messages.pop()
     } finally {
       clearInterval(timer)
+      if (reply.thinkStart !== undefined) reply.thinkEnd ??= performance.now() // stopped while still thinking
       opId = null
       if (feeding === reply) {
         feeding = null
@@ -415,6 +446,17 @@
         {#each models as m (m.name)}<option value={m.name} title={m.name}>{m.displayName}</option>{/each}
       </select><Icon name="chev-down" />
     </span>
+    {#if canThink}
+      <Btn
+        icon="bulb"
+        label="Thinking"
+        short="Think"
+        class="ghost"
+        aria-pressed={settings.think}
+        title="Let the model think before it answers (slower start, often better answers). Off = answers start right away."
+        onclick={() => (settings.think = !settings.think)}
+      />
+    {/if}
     <Btn
       icon="plus"
       label="New chat"
@@ -452,8 +494,8 @@
       icon="user"
       label="Avatar"
       class="ghost"
-      aria-pressed={avatar.open}
-      title={avatar.open ? 'Close the avatar window' : 'Open the avatar window: a figure that moves its mouth while replies are spoken (options on the Avatar page)'}
+      aria-pressed={avatarShown()}
+      title={avatar.docked ? 'Hide the avatar docked in the sidebar' : avatar.open ? 'Close the avatar window' : 'Open the avatar window: a figure that moves its mouth while replies are spoken (options on the Avatar page)'}
       onclick={() => toggleAvatar(settings.avatarBg).catch((e) => (error = errText(e)))}
     />
   </div>
@@ -500,7 +542,11 @@
         ? 'Stop reading this reply aloud'
         : 'Read this reply aloud from the beginning (stops any current speech)'}
       <div class="msg {m.role}">
-        <div class="bubble">{m.content}{#if streaming}<span class="caret" aria-hidden="true"></span>{/if}</div>
+        {#if m.role === 'assistant'}
+          <Reply text={m.content} thinking={m.thinking} thinkStart={m.thinkStart} thinkEnd={m.thinkEnd} {streaming} onrender={scrollToEnd} />
+        {:else}
+          <div class="bubble">{m.content}</div>
+        {/if}
         {#if m.role === 'assistant'}
           <!-- Fixed footer: the rate keeps its place whether or not the play button is shown. -->
           <div class="meta">

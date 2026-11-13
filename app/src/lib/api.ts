@@ -7,6 +7,8 @@ import type { VoiceDetail } from './voices'
 export interface Settings {
   ollamaPath: string | null
   lastModel: string | null
+  /** Let thinking models reason before answering (their default); false turns it off where the model supports that. */
+  think: boolean
   voice: string | null
   ttsEnabled: boolean
   ttsSpeed: number
@@ -24,6 +26,8 @@ export interface Settings {
   avatarOpacity: number
   /** Character shown in the avatar window; null = built-in demo figure. */
   avatarActive: string | null
+  /** The avatar is shown in the sidebar instead of its own window (restored at start). */
+  avatarDocked: boolean
 }
 
 export interface InputDevice {
@@ -146,8 +150,19 @@ export const api = {
 
   listModels: () => invoke<ModelInfo[]>('list_models'),
   deleteModel: (name: string) => invoke<void>('delete_model', { name }),
-  chat: (id: string, model: string, messages: ChatMessage[], onToken: (t: string) => void) =>
-    invoke<ChatResult>('chat', { id, model, messages, onToken: channel(onToken) }),
+  /** Capabilities Ollama reports for an installed model, e.g. 'completion', 'tools', 'thinking'. */
+  modelCapabilities: (model: string) => invoke<string[]>('model_capabilities', { model }),
+  /**
+   * Streams the answer to `onToken`. Thinking models send their reasoning to `onThinking` first (never part of the
+   * answer); `think: false` turns reasoning off for models that support it (default true = the model's default).
+   */
+  chat: (
+    id: string,
+    model: string,
+    messages: ChatMessage[],
+    onToken: (t: string) => void,
+    { think = true, onThinking = () => {} }: { think?: boolean; onThinking?: (t: string) => void } = {},
+  ) => invoke<ChatResult>('chat', { id, model, messages, think, onToken: channel(onToken), onThinking: channel(onThinking) }),
   ollamaLog: () => invoke<LogLine[]>('ollama_log'),
   ollamaLogClear: () => invoke<void>('ollama_log_clear'),
   cancel: (id: string) => invoke<void>('cancel', { id }),
@@ -223,6 +238,7 @@ export const api = {
 
   /** Avatar window only: its listeners are ready; the backend sends `avatar://ready` to the main window. */
   puppetReady: () => invoke<void>('puppet_ready'),
+  puppetDock: () => invoke<void>('puppet_dock'),
   /** Saved avatar characters, sorted by name. */
   avatarList: () => invoke<Rig[]>('avatar_list'),
   /** Copies a PNG/JPEG/WebP (max 20 MB, 8192 px per side) picked in the open dialog into a new character. */

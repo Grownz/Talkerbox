@@ -83,6 +83,23 @@ export class SpeechText {
   }
 }
 
+/**
+ * Removes what should not be read aloud: code fences, HTML tags, link and image targets (label or alt text stay),
+ * bare URLs, list bullets, rules and table separators, and the remaining Markdown markers.
+ */
+export function speakable(s: string): string {
+  return s
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/<\/?[a-zA-Z][^>]*>/g, ' ')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/<?\b(?:https?|ftp):\/\/[^\s>)]+>?/g, ' ')
+    .replace(/^\s*[-+*]\s+/gm, '')
+    .replace(/[-=_*]{3,}|:?-{2,}:?/g, ' ')
+    .replace(/[*_#>`~|]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 /** Cuts text longer than `max` at the last space or comma before the limit (hard cut if there is none). */
 export function chunkLong(text: string, max = MAX_CHUNK): string[] {
   const out: string[] = []

@@ -137,6 +137,8 @@ struct AppState {
     /// Serialises TTS start/stop/restart (held across awaits, hence tokio's mutex).
     tts_life: tokio::sync::Mutex<()>,
     cancels: Mutex<HashMap<String, Arc<Notify>>>,
+    /// Ollama capabilities per model id (`/api/show`); cleared whenever the model list is reloaded.
+    model_caps: Mutex<HashMap<String, Vec<String>>>,
     job: Option<KillJob>,
     stt: Mutex<Option<stt::Listener>>,
     /// Set while a reply is read aloud: speech input drops the audio (kept across listeners).
@@ -317,6 +319,7 @@ fn ollama_log_clear(state: State<'_, AppState>) {
 #[tauri::command]
 async fn list_models(app: AppHandle, state: State<'_, AppState>) -> Res<Vec<ModelInfo>> {
     let mut models = ollama::tags(&state.http).await?;
+    state.model_caps.lock().unwrap().clear(); // a model may have been replaced under the same name
     let stored = config::load(&app).display_names;
     for m in &mut models {
         m.display_name = stored.get(&m.name).cloned().unwrap_or_else(|| names::from_id(&m.name));
@@ -342,18 +345,38 @@ async fn hf_repo_id(http: &reqwest::Client, repo: &str) -> Option<String> {
     hf_model_json(http, repo).await?.get("id").and_then(|i| i.as_str()).map(str::to_owned)
 }
 
-/// Streams reply tokens over `on_token`. Resolves with cancellation flag and Ollama's final eval stats.
+/// Capabilities of an installed model as Ollama reports them (e.g. "thinking"), cached until the next model list.
+#[tauri::command]
+async fn model_capabilities(state: State<'_, AppState>, model: String) -> Res<Vec<String>> {
+    if let Some(c) = state.model_caps.lock().unwrap().get(&model) {
+        return Ok(c.clone());
+    }
+    let caps = ollama::capabilities(&state.http, &model).await?;
+    state.model_caps.lock().unwrap().insert(model, caps.clone());
+    Ok(caps)
+}
+
+/// Streams reply tokens over `on_token` and the model's reasoning (if any) over `on_thinking`. `think: false`
+/// switches reasoning off for models that support it. Resolves with cancellation flag and Ollama's final eval stats.
 #[tauri::command]
 async fn chat(
     state: State<'_, AppState>,
     id: String,
     model: String,
     messages: Vec<ChatMessage>,
+    think: bool,
     on_token: Channel<String>,
+    on_thinking: Channel<String>,
 ) -> Res<ollama::ChatResult> {
     let op = state.op(&id);
-    ollama::chat(&state.http, &model, &messages, &op.notify, |t| {
-        send(&on_token, t);
+    // Unknown support (lookup failed) counts as none: `think` must not reach models without it.
+    let think_off = !think
+        && model_capabilities(state.clone(), model.clone()).await.is_ok_and(|c| c.iter().any(|c| c == "thinking"));
+    ollama::chat(&state.http, &model, &messages, think_off, &op.notify, |p| {
+        match p {
+            ollama::Piece::Content(t) => send(&on_token, t),
+            ollama::Piece::Thinking(t) => send(&on_thinking, t),
+        }
         Ok(())
     })
     .await
@@ -1170,6 +1193,7 @@ pub fn run() {
         .expect("HTTP client");
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(avatar::main_window_event)
         .manage(AppState {
             http,
             ollama: Mutex::new(None),
@@ -1177,6 +1201,7 @@ pub fn run() {
             tts: Mutex::default(),
             tts_life: tokio::sync::Mutex::new(()),
             cancels: Mutex::default(),
+            model_caps: Mutex::default(),
             job: KillJob::new(),
             stt: Mutex::new(None),
             stt_muted: Arc::default(),
@@ -1192,6 +1217,7 @@ pub fn run() {
             ollama_log,
             ollama_log_clear,
             list_models,
+            model_capabilities,
             delete_model,
             chat,
             cancel,
@@ -1237,7 +1263,9 @@ pub fn run() {
             face::face_remove,
             face::face_detect,
             avatar::puppet_open,
+            avatar::puppet_retransparent,
             avatar::puppet_close,
+            avatar::puppet_dock,
             avatar::puppet_ready,
             rig::avatar_list,
             rig::avatar_import_image,

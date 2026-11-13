@@ -18,3 +18,7 @@ test('every component has a name, a licence and an https link', () => {
 test('project links are https', () => {
   for (const u of [REPO_URL, LICENSE_URL, NOTICES_URL]) assert.ok(isHttps(u), u)
 })
+
+test('every bundled frontend dependency is listed', () => {
+  for (const name of ['Svelte', 'flag-icons', 'markdown-it']) assert.ok(COMPONENTS.some((c) => c.name === name && c.source === 'shipped'), name)
+})

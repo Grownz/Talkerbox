@@ -18,6 +18,7 @@ export const COMPONENTS: Component[] = [
   { name: 'Tauri and other Rust crates', licence: 'MIT OR Apache-2.0 (a few MPL-2.0, BSD, Zlib, ISC)', url: 'https://github.com/tauri-apps/tauri', source: 'shipped' },
   { name: 'Svelte', licence: 'MIT', url: 'https://github.com/sveltejs/svelte', source: 'shipped' },
   { name: 'flag-icons', licence: 'MIT', url: 'https://github.com/lipis/flag-icons', source: 'shipped' },
+  { name: 'markdown-it', licence: 'MIT (its entities tables: BSD-2-Clause)', url: 'https://github.com/markdown-it/markdown-it', source: 'shipped' },
   { name: 'Vosk API', licence: 'Apache-2.0', url: 'https://github.com/alphacep/vosk-api', source: 'shipped' },
   { name: 'GCC runtime libraries', licence: 'GPL-3.0-or-later with GCC Runtime Library Exception', url: 'https://gcc.gnu.org', source: 'shipped' },
   { name: 'eSpeak NG (TTS sidecar)', licence: 'GPL-3.0-or-later', url: 'https://github.com/espeak-ng/espeak-ng', source: 'shipped' },

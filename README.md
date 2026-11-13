@@ -12,12 +12,12 @@ your computer; after the one-time model downloads it works offline.
 
 ## At a glance
 
-- **Chat with a local LLM**: streamed replies, model picker, stop button, live tokens per second.
+- **Chat with a local LLM**: streamed replies with Markdown formatting, visible (or switched-off) thinking, model picker, stop button, live tokens per second.
 - **Spoken replies**: every reply is read aloud sentence by sentence, with a play/stop button on each reply, voice
   picker, speed slider, extra voices and language packs (two German voices with one click).
 - **Speech input**: dictate with the microphone, fully offline (German or English).
 - **Talking avatar**: a separate window with a figure cut out of your own image that moves its lips, blinks, sways
-  and gestures while it speaks; on a normal, green-screen or transparent background.
+  and gestures while it speaks; on a normal, green-screen or transparent background, or docked into the sidebar.
 - **Editors for the avatar**: cut the figure out (with one-click "Smart select"), mark eyes, mouth, lips, arms and
   legs, and preview the animation.
 - **Light and dark mode**, a sidebar that collapses to an icon rail, works down to 720 x 520.
@@ -27,7 +27,12 @@ your computer; after the one-time model downloads it works offline.
 ## What you can do
 
 ### Chat
-Pick any model your Ollama server has and chat; replies stream in as they are generated. You can stop a reply,
+Pick any model your Ollama server has and chat; replies stream in as they are generated. Replies that use Markdown
+are shown formatted (headings, lists, code blocks with a Copy button, tables, quotes); links show their address
+as text and are not opened, and images are shown as their description, so a reply never loads anything. Models that
+think before answering show "Thinking… N s" (with the reasoning, collapsible, never read aloud) instead of a blank
+reply; for those models a **Thinking** button next to the model picker switches thinking off so answers start right
+away. You can stop a reply,
 see the generation speed, and download new models on the **Models** page from a Hugging Face link,
 `hf.co/user/repo[:quant]`, an Ollama library name or a direct `.gguf` URL (downloads resume after interruptions).
 The status light in the sidebar starts and stops the Ollama server; Talkerbox starts it automatically when it opens
@@ -62,7 +67,13 @@ spoken replies:
 - **Life**: random blinking, a gentle sway, and arm and leg gestures that follow the speech energy (no sway or
   gestures when Windows "reduce motion" is on).
 - **Background**: the app theme, green screen (#00ff00) for streaming and video tools, or fully transparent so only
-  the figure floats on your desktop; plus an opacity slider. The window remembers its position and size.
+  the figure floats on your desktop; plus an opacity slider. The window remembers its position and size. On a
+  see-through background its title bar hides and shows again while the mouse is over the window.
+- **Dock**: the dock button in the avatar window's title bar puts the avatar into the left sidebar of the main window
+  (above the Ollama status, on the sidebar background); double-click it there to get the window back. Talkerbox
+  remembers a docked avatar and shows it again at the next start. If the main window is too small for the full
+  sidebar with the whole avatar, it grows (and moves, if needed, to stay on the screen); a maximised window is left
+  as it is.
 - **Test speech** plays a sample sentence so you can check the avatar without chatting.
 
 ### Avatar editors
@@ -261,7 +272,8 @@ Hugging Face (MobileSAM weights and the Segment Anything mask decoder Apache-2.0
 AI fill the LaMa inpainting model (Apache-2.0) as exported by the OpenCV Zoo (`opencv/inpainting_lama`, Apache-2.0),
 and for face detection the MediaPipe BlazeFace and Face Mesh V2 models (Apache-2.0) as ONNX conversions from the
 `fernandotonon/QtMeshEditor-blazeface-onnx` and `-facemesh-onnx` repositories on Hugging Face (Apache-2.0). Flags from
-[flag-icons](https://github.com/lipis/flag-icons) (MIT).
+[flag-icons](https://github.com/lipis/flag-icons) (MIT); chat replies are rendered with
+[markdown-it](https://github.com/markdown-it/markdown-it) (MIT; its `entities` tables BSD-2-Clause).
 
 ## Security
 

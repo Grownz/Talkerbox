@@ -1,0 +1,13 @@
+{"model":"hf.co/mradermacher/Qwen3.5-4B-SOMPOA-heresy-v2-GGUF:latest","created_at":"2026-11-13T13:33:02.4328978Z","message":{"role":"assistant","content":"","thinking":"Thinking"},"done":false}
+{"model":"hf.co/mradermacher/Qwen3.5-4B-SOMPOA-heresy-v2-GGUF:latest","created_at":"2026-11-13T13:33:02.4433851Z","message":{"role":"assistant","content":"","thinking":" Process"},"done":false}
+{"model":"hf.co/mradermacher/Qwen3.5-4B-SOMPOA-heresy-v2-GGUF:latest","created_at":"2026-11-13T13:33:02.449463Z","message":{"role":"assistant","content":"","thinking":":"},"done":false}
+{"model":"hf.co/mradermacher/Qwen3.5-4B-SOMPOA-heresy-v2-GGUF:latest","created_at":"2026-11-13T13:33:02.4552276Z","message":{"role":"assistant","content":"","thinking":"\n"},"done":false}
+{"model":"hf.co/mradermacher/Qwen3.5-4B-SOMPOA-heresy-v2-GGUF:latest","created_at":"2026-11-13T13:33:04.8554773Z","message":{"role":"assistant","content":"","thinking":" the"},"done":false}
+{"model":"hf.co/mradermacher/Qwen3.5-4B-SOMPOA-heresy-v2-GGUF:latest","created_at":"2026-11-13T13:33:04.8614981Z","message":{"role":"assistant","content":"","thinking":" selected"},"done":false}
+{"model":"hf.co/mradermacher/Qwen3.5-4B-SOMPOA-heresy-v2-GGUF:latest","created_at":"2026-11-13T13:33:04.8679534Z","message":{"role":"assistant","content":"","thinking":" draft"},"done":false}
+{"model":"hf.co/mradermacher/Qwen3.5-4B-SOMPOA-heresy-v2-GGUF:latest","created_at":"2026-11-13T13:33:04.8720706Z","message":{"role":"assistant","content":"","thinking":")"},"done":false}
+{"model":"hf.co/mradermacher/Qwen3.5-4B-SOMPOA-heresy-v2-GGUF:latest","created_at":"2026-11-13T13:33:04.8981331Z","message":{"role":"assistant","content":"1"},"done":false}
+{"model":"hf.co/mradermacher/Qwen3.5-4B-SOMPOA-heresy-v2-GGUF:latest","created_at":"2026-11-13T13:33:04.904227Z","message":{"role":"assistant","content":"7"},"done":false}
+{"model":"hf.co/mradermacher/Qwen3.5-4B-SOMPOA-heresy-v2-GGUF:latest","created_at":"2026-11-13T13:33:04.9099358Z","message":{"role":"assistant","content":" multiplied"},"done":false}
+{"model":"hf.co/mradermacher/Qwen3.5-4B-SOMPOA-heresy-v2-GGUF:latest","created_at":"2026-11-13T13:33:04.9160614Z","message":{"role":"assistant","content":" by"},"done":false}
+{"model":"hf.co/mradermacher/Qwen3.5-4B-SOMPOA-heresy-v2-GGUF:latest","created_at":"2026-11-13T13:33:04.9760033Z","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","total_duration":2594219300,"load_duration":3999500,"prompt_eval_count":26,"prompt_eval_cached_count":22,"prompt_eval_duration":26930000,"eval_count":425,"eval_duration":2542706000}

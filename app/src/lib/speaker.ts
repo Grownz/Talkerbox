@@ -1,9 +1,9 @@
 // Sentence-by-sentence speech: streamed text in, WebAudio playback out.
 import { api, errText } from './api'
-import { avatar, sendToPuppet } from './avatar.svelte'
+import { avatarShown, sendToPuppet } from './avatar.svelte'
 import { envelope } from './envelope'
 import type { AvatarSentence } from './avatarQueue'
-import { chunkLong, SpeechText } from './sentences'
+import { chunkLong, speakable, SpeechText } from './sentences'
 import { visemes } from './viseme'
 
 const HOP_MS = 20
@@ -16,16 +16,6 @@ function epochAt(ctx: AudioContext, at: number): number {
     ? ts.performanceTime + (at - (ts.contextTime ?? 0)) * 1000
     : performance.now() + (at - ctx.currentTime + (ctx.outputLatency || ctx.baseLatency || 0)) * 1000
   return performance.timeOrigin + perf
-}
-
-/** Removes markdown syntax that would otherwise be read aloud. */
-export function speakable(s: string): string {
-  return s
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/[*_#>`~|]/g, '')
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/\s+/g, ' ')
-    .trim()
 }
 
 export class Speaker {
@@ -132,7 +122,7 @@ export class Speaker {
     src.start(at)
     this.nextStart = at + buf.duration
     this.sources.add(src)
-    if (avatar.open) {
+    if (avatarShown()) {
       const pcm = buf.getChannelData(0)
       const msg: AvatarSentence = {
         startMs: epochAt(ctx, at),
