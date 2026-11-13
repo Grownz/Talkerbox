@@ -97,6 +97,8 @@ export function autoSplit(poly: Point[]): { upper: Point[]; lower: Point[]; corn
 /** Mouth frame and lip extents for lips in pixels; `warp` 0..1. Null if the corners are less than 2 px apart. */
 export function mouthGeometry(upper: Point[], lower: Point[], corners: [Point, Point] | undefined, warp: number): MouthGeo | null {
   if (upper.length < 3 || lower.length < 3) return null
+  // Broken lip data: no warp rather than a mesh with NaN vertices.
+  if (![...upper, ...lower, ...(corners ?? [])].every((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]))) return null
   let [cl, cr] = corners ?? [0, 1].map((k) => {
     const pick = (pts: Point[]) => pts.reduce((m, p) => ((k ? p[0] > m[0] : p[0] < m[0]) ? p : m))
     const a = pick(upper)
@@ -321,7 +323,8 @@ export function triAffine(s: [Point, Point, Point], d: [Point, Point, Point]): [
   const c = ((u2 - u0) * (x1 - x0) - (u1 - u0) * (x2 - x0)) / den
   const b = ((v1 - v0) * (y2 - y0) - (v2 - v0) * (y1 - y0)) / den
   const dd = ((v2 - v0) * (x1 - x0) - (v1 - v0) * (x2 - x0)) / den
-  return [a, b, c, dd, u0 - a * x0 - c * y0, v0 - b * x0 - dd * y0]
+  const m: [number, number, number, number, number, number] = [a, b, c, dd, u0 - a * x0 - c * y0, v0 - b * x0 - dd * y0]
+  return m.every(Number.isFinite) ? m : null
 }
 
 /**

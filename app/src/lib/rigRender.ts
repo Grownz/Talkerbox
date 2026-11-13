@@ -355,7 +355,9 @@ export function drawRig(
     const t = ctx.getTransform()
     ctx.beginPath()
     ctx.rect(0, 0, w, h)
-    for (const p of faceOutline(lips.geo, 2 / (Math.sqrt(Math.abs(t.a * t.d - t.b * t.c)) || 1))) ctx.lineTo(...p)
+    // moveTo, not lineTo: rect() leaves the pen at (0, 0), and a lineTo would join the image corner to the outline,
+    // cutting a triangle from the top left corner to the face out of the base.
+    faceOutline(lips.geo, 2 / (Math.sqrt(Math.abs(t.a * t.d - t.b * t.c)) || 1)).forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p)))
     ctx.closePath()
     ctx.clip('evenodd')
   }

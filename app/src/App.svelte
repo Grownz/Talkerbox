@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import { api, errText, type OllamaStatus, type Settings } from './lib/api'
   import { avatar, puppetOpen, sendToPuppet, watchPuppet } from './lib/avatar.svelte'
+  import About from './lib/About.svelte'
   import AvatarCard from './lib/AvatarCard.svelte'
   import Btn from './lib/Btn.svelte'
   import Chat from './lib/Chat.svelte'
@@ -13,7 +14,7 @@
   import Terminal from './lib/Terminal.svelte'
   import ThemeSwitch from './lib/ThemeSwitch.svelte'
 
-  type View = 'chat' | 'models' | 'speech' | 'avatar' | 'server'
+  type View = 'chat' | 'models' | 'speech' | 'avatar' | 'server' | 'about'
   const NAV: { id: View; label: string; icon: IconName; tip: string }[] = [
     { id: 'chat', label: 'Chat', icon: 'chat', tip: 'Talk to the selected model and hear its replies' },
     { id: 'models', label: 'Models', icon: 'cube', tip: 'Manage Ollama models: pull, import, delete' },
@@ -189,6 +190,13 @@
       </div>
     </section>
     <div class="rail-foot"><ThemeSwitch /></div>
+    <button
+      type="button"
+      class="nav-i"
+      aria-current={view === 'about' ? 'page' : undefined}
+      title="About & licences"
+      onclick={() => (view = 'about')}><Icon name="info" /><span class="l">About</span></button
+    >
   </nav>
 
   <div class="main">
@@ -268,6 +276,10 @@
           <p class="help">Read-only output of the server Talkerbox started. It is captured even while the log is closed.</p>
         </div>
       </div>
+    </section>
+
+    <section class="view page" hidden={view !== 'about'} aria-label="About and licences">
+      <About onError={(m) => (error = m)} />
     </section>
   </div>
 </div>

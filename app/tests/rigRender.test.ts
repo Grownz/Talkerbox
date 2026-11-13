@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { Point, RigPart } from '../src/lib/rig.ts'
+import type { Point, Rig, RigPart } from '../src/lib/rig.ts'
 import {
   REST,
   apply,
   blinkMatrix,
   defaultPivot,
+  drawRig,
   isIdentity,
   mouthOpenPolygon,
   mul,
@@ -112,4 +113,42 @@ test('viseme shape widens or narrows the Phase 4 mouth; lips switch to the lip g
   const g = rigMouthGeo({ parts: [mouth], mouth: lips }, 200, 100)!
   assert.ok(Math.abs(g.half - 20) < 1e-9 && Math.abs(g.c[0] - 100) < 1e-9)
   assert.ok(rigMouthGeo({ parts: [mouth], mouth: { ...lips, warp: 1 } }, 200, 100)!.radius > g.radius, 'default warp is below the maximum')
+})
+test('the base cut for the face warp is the image minus the face outline, nothing joined to the corner', () => {
+  // Recording 2D context; just enough canvas for drawRig to cut its textures.
+  const calls: [string, unknown[]][] = []
+  const ctx = new Proxy({} as Record<string, unknown>, {
+    get: (_, k: string) =>
+      k === 'getTransform' ? () => ({ a: 1, b: 0, c: 0, d: 1 }) : k === 'canvas' ? {} : (...a: unknown[]) => void calls.push([k, a]),
+    set: () => true,
+  })
+  const doc = (globalThis as { document?: unknown }).document
+  ;(globalThis as { document?: unknown }).document = { createElement: () => ({ getContext: () => ctx, width: 1, height: 1 }) }
+  try {
+    const [W, H] = [1500, 2500]
+    const n = (x: number, y: number): Point => [x / W, y / H]
+    const rig = {
+      parts: [part('m', 'mouth', [n(730, 330), n(770, 330), n(750, 340)], n(750, 330))],
+      mask: { points: [n(10, 10), n(1490, 10), n(1490, 2490)] },
+      mouth: { states: [], lipUpper: [n(730, 330), n(750, 324), n(770, 330)], lipLower: [n(770, 330), n(750, 338), n(730, 330)], warp: 1 },
+    } as unknown as Rig
+    drawRig(ctx as unknown as CanvasRenderingContext2D, rig, {} as CanvasImageSource, W, H, { ...REST, wide: 0.4 })
+    // Replay the path up to the first even-odd clip with the canvas rules: rect() closes its subpath and starts a new
+    // one at its corner, lineTo() continues the current subpath.
+    const end = calls.findIndex(([k, a]) => k === 'clip' && a[0] === 'evenodd')
+    const start = calls.slice(0, end).findLastIndex(([k]) => k === 'beginPath')
+    const subs: Point[][] = []
+    for (const [k, a] of calls.slice(start + 1, end) as [string, number[]][]) {
+      if (k === 'rect') subs.push(box(a[0], a[1], a[0] + a[2], a[1] + a[3]), [[a[0], a[1]]])
+      else if (k === 'moveTo') subs.push([[a[0], a[1]]])
+      else if (k === 'lineTo') (subs.at(-1) ?? subs[subs.push([]) - 1]).push([a[0], a[1]])
+    }
+    const used = subs.filter((s) => s.length > 1)
+    assert.equal(used.length, 2, 'image rectangle and face outline')
+    assert.deepEqual(used[0], box(0, 0, W, H))
+    assert.equal(used[1].length, 4)
+    assert.ok(used[1].every(([x, y]) => Math.hypot(x - 750, y - 330) < 300), `face outline ${used[1]} reaches the corner`)
+  } finally {
+    ;(globalThis as { document?: unknown }).document = doc
+  }
 })

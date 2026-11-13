@@ -76,6 +76,8 @@ export interface VoiceInfo {
   /** null = unknown language, shown with a neutral globe. */
   country: string | null
   gender: 'female' | 'male' | null
+  /** e.g. 'Heart'; ids that do not follow the Kokoro pattern are shown as is. */
+  name: string
   /** e.g. 'Heart (female)'; ids that do not follow the Kokoro pattern are shown as is. */
   label: string
   /** Spoken with the base model although its language is unknown. */
@@ -87,16 +89,17 @@ const capitalise = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 export function voiceInfo(id: string, detail?: VoiceDetail, packName?: string): VoiceInfo {
   const m = /^([a-z])([fm])_(.+)$/.exec(id)
   const gender = m ? (m[2] === 'f' ? 'female' : 'male') : null
-  const label = m ? `${m[3].split('_').map(capitalise).join(' ')} (${gender})` : id
+  const name = m ? m[3].split('_').map(capitalise).join(' ') : id
+  const label = m ? `${name} (${gender})` : id
   const fallback = detail?.fallback ?? false
   if (detail?.pack) {
     const lang = languageInfo(detail.language)
     const language = lang?.name ?? detail.language ?? 'Other'
-    return { id, language, group: packName ?? language, country: lang?.country ?? null, gender, label, fallback }
+    return { id, language, group: packName ?? language, country: lang?.country ?? null, gender, name, label, fallback }
   }
   const lang = m ? languageInfo(PREFIX_CODES[m[1]]) : null
   const language = lang?.name ?? 'Other'
-  return { id, language, group: language, country: lang?.country ?? null, gender, label, fallback }
+  return { id, language, group: language, country: lang?.country ?? null, gender, name, label, fallback }
 }
 
 export interface VoiceGroup {

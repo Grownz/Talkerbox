@@ -261,6 +261,11 @@ export const api = {
     invoke<{ points: Point[]; score: number; presence: number; ms: number }>('face_detect', new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength), {
       headers: { 'x-width': String(width), 'x-height': String(height) },
     }),
+
+  /** Opens an https link in the default browser; the backend only allows the hosts the About page uses. */
+  openLink: (url: string) => invoke<void>('open_link', { url }),
+  /** Opens THIRD_PARTY_NOTICES.md from the install folder; false when it is missing (dev runs). */
+  openNotices: () => invoke<boolean>('open_notices'),
 }
 
 export function errText(e: unknown): string {

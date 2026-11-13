@@ -42,8 +42,23 @@
   const speaker = new Speaker()
   speaker.onError = (m) => (error = m)
   speaker.onFallback = (v) => (fallbackSeenFor = v)
-  // The microphone must not recognise the reply being read aloud: speech input drops audio meanwhile.
-  speaker.onSpeaking = (on) => void api.sttMute(on).catch(() => {})
+  // The reply being read aloud (or queued for it): it shows the stop button instead of play.
+  let speakingMsg = $state.raw<object | null>(null)
+  // The streaming reply whose tokens still go to the speaker; null once it is stopped or replaced.
+  let feeding: object | null = null
+  speaker.onSpeaking = (on) => {
+    // The microphone must not recognise the reply being read aloud: speech input drops audio meanwhile.
+    void api.sttMute(on).catch(() => {})
+    // Between two streamed sentences the speaker can be idle while the reply is still coming.
+    if (!on && speakingMsg !== feeding) speakingMsg = null
+  }
+
+  /** Stops all speech, including the rest of a reply that is still streaming. */
+  function stopSpeech() {
+    feeding = null
+    speakingMsg = null
+    speaker.stop()
+  }
 
   // One persistent hint for the selected voice instead of a message per sentence.
   const usingFallback = $derived(
@@ -114,24 +129,27 @@
   async function onTtsToggle() {
     settings.ttsEnabled = !settings.ttsEnabled
     if (settings.ttsEnabled) return startTts()
-    speaker.stop()
+    stopSpeech()
     tts = await api.ttsStop().catch((err) => ((error = errText(err)), tts))
   }
 
   const ttsOn = $derived(settings.ttsEnabled && !!tts?.running && !!settings.voice)
 
-  function prepareSpeaker() {
-    speaker.stop()
+  /** Cancels whatever is being spoken and makes `msg` the reply being read. */
+  function prepareSpeaker(msg: object) {
+    stopSpeech()
     speaker.unlock()
     speaker.voice = settings.voice!
     speaker.speed = settings.ttsSpeed
+    speakingMsg = msg
   }
 
   /** Re-reads a reply from the beginning, cancelling whatever is being spoken. */
-  function readAloud(text: string) {
-    prepareSpeaker()
-    speaker.feed(text)
+  function readAloud(msg: ChatMessage) {
+    prepareSpeaker(msg)
+    speaker.feed(msg.content)
     speaker.flush()
+    if (!speaker.speaking) speakingMsg = null // nothing speakable in it
   }
 
   onMount(() => {
@@ -172,7 +190,7 @@
       }),
     ]
     return () => {
-      speaker.stop()
+      stopSpeech()
       if (listening) api.sttStop()
       offs.forEach((p) => p.then((off) => off()))
     }
@@ -211,7 +229,7 @@
       return
     }
     // The microphone must not hear the reply being read aloud.
-    speaker.stop()
+    stopSpeech()
     sttBase = input
     sttStarting = true
     listening = true
@@ -324,8 +342,10 @@
     const history: ChatMessage[] = messages.map(({ role, content }) => ({ role, content }))
     messages.push({ role: 'assistant', content: '' })
     const reply = messages[messages.length - 1]
-    const speak = ttsOn
-    if (speak) prepareSpeaker()
+    if (ttsOn) {
+      prepareSpeaker(reply)
+      feeding = reply
+    }
     const id = newOpId()
     opId = id
     // Chunk arrival times; the display updates once per second only, to avoid flicker.
@@ -338,9 +358,9 @@
       const res = await api.chat(id, model, history, (t) => {
         stamps.push(performance.now())
         reply.content += t
-        if (speak) speaker.feed(t)
+        if (feeding === reply) speaker.feed(t)
       })
-      if (speak) speaker.flush()
+      if (feeding === reply) speaker.flush()
       reply.tps = finalRate(res.evalCount, res.evalDuration, stamps) ?? undefined
     } catch (e) {
       error = errText(e)
@@ -348,6 +368,10 @@
     } finally {
       clearInterval(timer)
       opId = null
+      if (feeding === reply) {
+        feeding = null
+        if (!speaker.speaking) speakingMsg = null // done, or nothing speakable
+      }
     }
     if (queued) {
       const next = queued
@@ -358,7 +382,7 @@
 
   function stop() {
     if (opId) api.cancel(opId)
-    speaker.stop()
+    stopSpeech()
   }
 
   function onKey(e: KeyboardEvent) {
@@ -395,9 +419,13 @@
       icon="plus"
       label="New chat"
       short="New"
+      p={-1}
       class="ghost"
-      title={opId ? 'Wait for the reply to finish (or stop it) before starting a new chat' : 'Clear the conversation and start over'}
-      onclick={() => (messages = [])}
+      title={opId ? 'Wait for the reply to finish (or stop it) before starting a new chat' : 'Clear the conversation and start over (stops any reading)'}
+      onclick={() => {
+        stopSpeech()
+        messages = []
+      }}
       disabled={!!opId || !messages.length}
     />
     <span class="sep"></span>
@@ -419,7 +447,6 @@
         <input type="range" min="0.5" max="2" step="0.1" bind:value={settings.ttsSpeed} />
         <output>{settings.ttsSpeed.toFixed(1)}×</output>
       </label>
-      <Btn icon="speaker-off" label="Stop speaking" p={1} class="ghost" title="Stop the current speech and drop queued sentences" onclick={() => speaker.stop()} />
     {/if}
     <Btn
       icon="user"
@@ -467,20 +494,26 @@
     {/if}
     {#each messages as m, i (i)}
       {@const streaming = !!opId && i === messages.length - 1 && m.role === 'assistant'}
+      {@const speaking = m === speakingMsg}
       {@const canReplay = ttsOn && m.role === 'assistant' && !streaming && !!m.content}
+      {@const replayTip = speaking
+        ? 'Stop reading this reply aloud'
+        : 'Read this reply aloud from the beginning (stops any current speech)'}
       <div class="msg {m.role}">
         <div class="bubble">{m.content}{#if streaming}<span class="caret" aria-hidden="true"></span>{/if}</div>
         {#if m.role === 'assistant'}
           <!-- Fixed footer: the rate keeps its place whether or not the play button is shown. -->
           <div class="meta">
             <span class="tps" class:live={streaming} title="Generation speed in tokens per second (live estimate while streaming, exact value from Ollama when done)">{m.tps !== undefined ? formatRate(m.tps) : ''}</span>
-            {#if canReplay}
+            {#if speaking || canReplay}
+              <!-- One element for play and stop, so keyboard focus stays on it when it toggles. -->
               <button
                 type="button"
                 class="replay"
-                title="Read this reply aloud from the beginning (stops any current speech)"
-                aria-label="Read this reply aloud from the beginning (stops any current speech)"
-                onclick={() => readAloud(m.content)}><Icon name="play" /></button
+                class:speaking
+                title={replayTip}
+                aria-label={replayTip}
+                onclick={() => (speaking ? stopSpeech() : readAloud(m))}><Icon name={speaking ? 'stop' : 'play'} /></button
               >
             {:else}
               <span class="replay-slot" aria-hidden="true"></span>

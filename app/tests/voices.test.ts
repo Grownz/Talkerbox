@@ -26,6 +26,7 @@ test('labels and languages', () => {
     language: 'American English',
     country: 'us',
     gender: 'female',
+    name: 'Heart',
     label: 'Heart (female)',
     group: 'American English',
     fallback: false,

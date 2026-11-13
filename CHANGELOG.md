@@ -5,6 +5,29 @@ versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versi
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-13
+
+### Added
+- **About & licences page**: an "i" button at the bottom of the sidebar opens a page with the app version, links to
+  the GitHub project and the MIT licence, and the main third-party components with their licences and links. "Full
+  notices" opens `THIRD_PARTY_NOTICES.md` from the install folder (or on GitHub when it is not there). Links open in
+  the default browser; the backend only opens https links to the hosts the page uses.
+
+### Changed
+- **Stop button on the reply**: the "Stop speaking" button in the chat header is gone. The reply that is being read
+  aloud (or queued for it, also while it streams) shows a red stop button in place of its green play button; it stops
+  the audio and the avatar's mouth, and the rest of a streaming reply is no longer spoken. "New chat" also stops
+  speech.
+- **Narrow chat header**: the voice picker always shows the flag and the voice name (it drops the gender and the
+  arrow first, then shortens a long name with an ellipsis), and "New chat" shrinks to its "+" icon before the model
+  name and the speed slider get cramped.
+
+### Fixed
+- **Triangle cut out of the character**: with lips and face warp, a moving mouth (talking, a viseme, or the demo
+  stopped mid-word) cut a transparent triangle from the top left corner of the image to the face out of the picture,
+  in the part editor preview and the avatar window. Lip data with invalid numbers now turns the warp off instead of
+  drawing a broken mesh.
+
 ## [0.5.0] - 2026-11-13
 
 ### Added
@@ -109,7 +132,8 @@ First early release.
 - The speech engine only accepts local requests (local Host header, JSON content type) and rejects oversized or
   malformed voice files.
 
-[Unreleased]: https://github.com/Grownz/Talkerbox/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Grownz/Talkerbox/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/Grownz/Talkerbox/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Grownz/Talkerbox/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Grownz/Talkerbox/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Grownz/Talkerbox/compare/v0.2.0...v0.3.0

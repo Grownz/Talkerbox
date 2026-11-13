@@ -6,6 +6,7 @@ mod face;
 mod featured;
 mod hf;
 mod inpaint;
+mod links;
 mod names;
 mod ollama;
 mod packs;
@@ -1247,6 +1248,8 @@ pub fn run() {
             rig::avatar_image,
             rig::avatar_fill,
             rig::avatar_save_fill,
+            links::open_link,
+            links::open_notices,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Talkerbox");

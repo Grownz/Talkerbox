@@ -14,7 +14,9 @@ import {
   triArea,
   type MouthGeo,
 } from '../src/lib/mouthWarp.ts'
+import { faceParts, FACE_LANDMARKS } from '../src/lib/faceParts.ts'
 import type { Point } from '../src/lib/rig.ts'
+import { VISEMES } from '../src/lib/viseme.ts'
 
 /** Mouth outline: an ellipse around (cx, cy), rx x ry px, optionally turned by `deg`. */
 const mouth = (cx = 200, cy = 300, rx = 40, ry = 12, deg = 0): Point[] => {
@@ -159,4 +161,53 @@ test('a tilted mouth moves along its own axis', () => {
   const b = displace(tilt, mouthMotion(tilt, 1, 0), p, 1)
   assert.ok(near(Math.hypot(...a), Math.hypot(...b), 0.05), `${a} vs ${b}`)
   assert.ok(near(b[0], -Math.sin(r) * a[1], 0.05) && near(b[1], Math.cos(r) * a[1], 0.05))
+})
+
+test('face-detected lips of a small face in a portrait image: sane mesh for every warp, viseme and opening', () => {
+  // MediaPipe lip indices (as faceParts.ts), a ~40 px mouth at (750, 330) in a 1500 x 2500 image, turned 8 degrees.
+  const [W, H] = [1500, 2500]
+  const lm: Point[] = Array.from({ length: FACE_LANDMARKS }, () => [0.5, 0.124])
+  const r = (8 * Math.PI) / 180
+  const put = (ids: number[], x0: number, x1: number, amp: number) =>
+    ids.forEach((id, k) => {
+      const t = k / (ids.length - 1)
+      const [x, y] = [x0 + (x1 - x0) * t - 750, amp * Math.sin(Math.PI * t)]
+      lm[id] = [(750 + x * Math.cos(r) - y * Math.sin(r)) / W, (330 + x * Math.sin(r) + y * Math.cos(r)) / H]
+    })
+  put([33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7], 715, 735, 8)
+  put([263, 466, 388, 387, 386, 385, 384, 398, 362, 382, 381, 380, 374, 373, 390, 249], 765, 785, 8)
+  put([61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291], 730, 770, -6)
+  put([291, 375, 321, 405, 314, 17, 84, 181, 91, 146, 61], 770, 730, 8)
+  put([78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308], 733, 767, -1.2)
+  put([78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308], 733, 767, 1.2)
+  const f = faceParts(lm)!
+  assert.ok(f, 'detection accepted')
+  const px = (pts: Point[]) => pts.map(([x, y]): Point => [x * W, y * H])
+  for (const warp of [0, 0.01, 0.3, 0.6, 1]) {
+    const g = mouthGeometry(px(f.lipUpper), px(f.lipLower), px(f.corners) as [Point, Point], warp)!
+    const mw = 2 * g.half
+    assert.ok(mw > 35 && mw < 45, `mouth width ${mw}`)
+    for (const { open, wide } of Object.values(VISEMES))
+      for (const o of [open, 0, 0.004, 0.5, 1]) {
+        const m = mouthMotion(g, o, wide || 0.3)
+        const face = faceMesh(g, m)
+        const cell = Math.max(...face.tris.map(([a, b, c]) => Math.abs(triArea(face.src[a], face.src[b], face.src[c]))))
+        for (const mesh of [face, lipMesh(g, m, 'upper'), lipMesh(g, m, 'lower')]) {
+          mesh.dst.forEach((d, i) => {
+            const s = mesh.src[i]
+            assert.ok(d.every(Number.isFinite) && d[0] >= 0 && d[0] <= W && d[1] >= 0 && d[1] <= H, `vertex ${d} outside the image`)
+            assert.ok(Math.hypot(d[0] - s[0], d[1] - s[1]) <= 0.5 * mw, `displacement at warp ${warp}, open ${o}`)
+            assert.ok(Math.hypot(s[0] - g.c[0], s[1] - g.c[1]) <= 6 * mw, 'mesh stays around the mouth')
+          })
+          for (const [a, b, c] of mesh.tris) assert.ok(Math.abs(triArea(mesh.dst[a], mesh.dst[b], mesh.dst[c])) <= 3 * cell + 1e-9, 'no huge triangle')
+        }
+      }
+  }
+})
+
+test('broken lip data gives no warp, and a broken target triangle no affine map', () => {
+  const s = autoSplit(mouth())!
+  assert.equal(mouthGeometry([...s.upper.slice(1), [Number.NaN, 300]], s.lower, s.corners, 1), null)
+  assert.equal(mouthGeometry(s.upper, s.lower, [[Infinity, 300], s.corners[1]], 1), null)
+  assert.equal(triAffine([[0, 0], [10, 0], [0, 10]], [[0, 0], [Number.NaN, 0], [0, 10]]), null)
 })

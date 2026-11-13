@@ -971,13 +971,15 @@ svg.flag {
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   min-height: 53px;
+  container: vhead / inline-size;
 }
 .vhead .fit {
   flex: 1;
 }
+/* Minimums wide enough that fit.ts collapses New chat and Avatar before the model name and slider get cramped. */
 .vhead .model {
   flex: 0 1 220px;
-  min-width: 130px;
+  min-width: 170px;
 }
 .vhead .sep {
   width: 1px;
@@ -987,7 +989,7 @@ svg.flag {
 }
 .vhead .range {
   flex: 0 1 170px;
-  min-width: 110px;
+  min-width: 130px;
 }
 .scroll {
   flex: 1;
@@ -1072,6 +1074,11 @@ svg.flag {
 .replay .i {
   width: 12px;
   height: 12px;
+}
+.replay.speaking,
+.replay.speaking:hover:not(:disabled) {
+  background: var(--err-fill);
+  color: var(--err-on);
 }
 .caret {
   display: inline-block;
@@ -1303,21 +1310,32 @@ button.mic.on.locked {
 }
 
 /* Voice picker: button plus fixed-position listbox */
+/* Does not shrink with the inputs, so fit.ts collapses the toolbar buttons first; in a narrow header it drops the
+   gender and the arrow, and a long name ends in an ellipsis - the flag and the start of the name always stay. */
 .voice-picker {
   display: flex;
-  flex: 0 1 auto;
-  min-width: 72px;
+  flex: none;
 }
 .vp-btn {
   gap: 8px;
   padding: 0 8px 0 10px;
-  flex: 0 1 auto;
-  min-width: 0;
 }
 .vp-btn .vn {
   overflow: hidden;
   text-overflow: ellipsis;
-  min-width: 0;
+  max-width: 16ch;
+}
+@container vhead (max-width: 760px) {
+  .vp-btn {
+    padding-right: 10px;
+  }
+  .vp-btn .vg,
+  .vp-btn > .i {
+    display: none;
+  }
+  .vp-btn .vn {
+    max-width: 10ch;
+  }
 }
 .vp-btn > .i {
   color: var(--text-3);
@@ -1478,6 +1496,44 @@ button.mic.on.locked {
   color: var(--text-2);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+/* About & licences page */
+.about ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.about a {
+  color: var(--acc-text);
+  text-underline-offset: 2px;
+}
+.about .card-h h2 .ver {
+  font-weight: 500;
+  color: var(--text-3);
+}
+.about-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+.about-links li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.lic-h {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.about .item {
+  min-height: 0;
+  padding-block: 8px;
+}
+.about .item .s {
+  white-space: normal;
 }
 .empty-inline {
   padding: 16px;

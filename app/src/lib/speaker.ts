@@ -36,7 +36,11 @@ export class Speaker {
   onFallback: (voice: string) => void = () => {}
   /** Called when speech starts (sentences queued, synthesising or playing) and when it is over. */
   onSpeaking: (on: boolean) => void = () => {}
-  private speaking = false
+  private on = false
+  /** Sentences are queued, being synthesised or playing. */
+  get speaking() {
+    return this.on
+  }
 
   private ctx: AudioContext | null = null
   private text = new SpeechText()
@@ -81,7 +85,7 @@ export class Speaker {
 
   private update() {
     const on = this.working || this.queue.length > 0 || this.sources.size > 0
-    if (on !== this.speaking) this.onSpeaking((this.speaking = on))
+    if (on !== this.on) this.onSpeaking((this.on = on))
   }
 
   private enqueue(raw: string) {

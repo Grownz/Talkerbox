@@ -13,8 +13,8 @@ your computer; after the one-time model downloads it works offline.
 ## At a glance
 
 - **Chat with a local LLM**: streamed replies, model picker, stop button, live tokens per second.
-- **Spoken replies**: every reply is read aloud sentence by sentence, with a replay button, voice picker, speed
-  slider, extra voices and language packs (two German voices with one click).
+- **Spoken replies**: every reply is read aloud sentence by sentence, with a play/stop button on each reply, voice
+  picker, speed slider, extra voices and language packs (two German voices with one click).
 - **Speech input**: dictate with the microphone, fully offline (German or English).
 - **Talking avatar**: a separate window with a figure cut out of your own image that moves its lips, blinks, sways
   and gestures while it speaks; on a normal, green-screen or transparent background.
@@ -36,7 +36,8 @@ Ollama itself: if it is not found, it asks you where it is.
 
 ### Spoken replies
 Tick "Speak replies" in the chat and every answer is read aloud, sentence by sentence, while it is still being
-written. Each finished reply has a play button to hear it again. On the **Speech** page you download the Kokoro
+written. Each finished reply has a play button to hear it again; while a reply is read aloud its button turns into a
+red stop button. On the **Speech** page you download the Kokoro
 voice files (about 350 MB, once), choose and preview voices (grouped by language, with flags), add voices or
 language packs from a link, and install the featured German voices Martin and Kerstin with one click.
 
@@ -246,7 +247,8 @@ described in [app/README.md](app/README.md). The sidecar has its own pytest suit
 ## Third-party notices
 
 The full list with versions, copyright holders and licence texts is in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); the installer places a copy next to `talkerbox.exe`. In short:
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); the installer places a copy next to `talkerbox.exe`, and the
+**About & licences** page (the "i" button at the bottom of the sidebar) lists the main components and opens it. In short:
 the installer ships the Vosk runtime (`libvosk.dll`, Apache-2.0) with MinGW runtime DLLs: `libstdc++-6.dll` and
 `libgcc_s_seh-1.dll` (GPL-3.0 with the GCC Runtime Library Exception) and `libwinpthread-1.dll` (MIT-style licence),
 and the TTS sidecar, a separate program the app talks to over local HTTP. The sidecar is a PyInstaller one-file

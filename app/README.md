@@ -20,10 +20,19 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
 - **Auto-start**: when the app opens and Ollama was found but is not running, Talkerbox starts `ollama serve` right
   away (once; a failure shows the usual error banner). If Ollama is not found, the path dialog opens instead. The
   "Start Ollama automatically" switch on the Server page turns this off (setting `ollamaAutostart`, default on).
-- **Layout**: a left sidebar with Chat, Models, Speech, Avatar and Server pages and the Ollama status at the bottom. Below
-  1024 px window width it collapses to a 64 px icon rail. Toolbar buttons shorten their labels, then become icons
-  (tooltip and accessible name stay) when space runs out; text inputs shrink first. The window cannot be made smaller
+- **Layout**: a left sidebar with Chat, Models, Speech, Avatar and Server pages, the Ollama status, the theme switch
+  and, at the very bottom, an "i" button for the About & licences page. Below 1024 px window width it collapses to a
+  64 px icon rail. Toolbar buttons shorten their labels, then become icons (tooltip and accessible name stay) when
+  space runs out; text inputs shrink first (in the chat header only to a usable minimum, so "New chat" becomes "+"
+  first). The voice picker keeps its flag and voice name: in a narrow header (container query) it drops the gender
+  and the arrow, and a long name ends in an ellipsis. The window cannot be made smaller
   than 720 x 520.
+- **About & licences**: app version (`getVersion`, allowed by `core:default`), links to the GitHub project and the MIT
+  licence, and the main third-party components with licence and link (`src/lib/licences.ts`, taken from
+  `THIRD_PARTY_NOTICES.md`; update both together). "Full notices" opens `THIRD_PARTY_NOTICES.md` from the install
+  folder (`open_notices`, fixed path in the resource dir) and falls back to the copy on GitHub when it is missing (dev
+  runs). Links open in the default browser through `open_link`, which only accepts https URLs to an allow-listed host
+  (`src-tauri/src/links.rs`; a Rust test checks every link in `licences.ts` and `About.svelte` against it).
 - **Light/dark mode**: follows the Windows setting by default. The sun/moon switch at the bottom of the sidebar
   overrides it; the choice is kept in the webview's localStorage.
 - **Chat**: streamed replies (`/api/chat`), model picker (`/api/tags`), history kept in memory, stop button.
@@ -40,9 +49,11 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   download the model.
 - **TTS**: the "Speak replies" checkbox starts the sidecar right away. If the start fails, the box unchecks itself and
   the reason is shown. Unchecking stops the sidecar and all speech at once. With the setting on, TTS starts
-  automatically when the app opens. Replies are spoken sentence by sentence (queued, played with WebAudio). There is a
-  stop button and a speed slider. Each finished assistant reply gets a green play button that re-reads it from the
-  start and cancels any current speech. Sentences also end at CJK `。！？`, and any piece over 1500 characters is cut
+  automatically when the app opens. Replies are spoken sentence by sentence (queued, played with WebAudio), with a
+  speed slider. Each finished assistant reply gets a green play button that re-reads it from the start and cancels
+  any current speech. The reply being read aloud (also while it is still streaming) shows a red stop button in that
+  place instead; it stops the audio, the queued sentences, the rest of a streaming reply and the avatar's mouth.
+  "New chat", the composer's Stop and starting the microphone also stop speech. Sentences also end at CJK `。！？`, and any piece over 1500 characters is cut
   at the last space or comma (the sidecar rejects texts over 2000). TTS start, stop and restart run one at a time.
   Stopping closes the sidecar's stdin and waits up to 3 s before killing it: only a clean exit lets the PyInstaller
   exe delete its `%TEMP%\_MEI*` folder. App exit uses the same path, and the job object stays as a safety net.
@@ -460,6 +471,8 @@ default pivots already cover limbs in every art style.
 - Window permissions: see below. No shell or filesystem plugin permissions are granted to any webview. Processes are spawned only by fixed Rust commands. Character files are only read and written under `avatars\<id>`
   with ids checked in Rust; the image path from the open dialog is only read and copied.
 - Download URLs must be http(s). Local file names are sanitised to `[A-Za-z0-9._-]`.
+- `open_link` hands only https URLs to an allow-listed host to `explorer` (one argument, no shell); `open_notices`
+  opens a fixed file in the resource dir. The webview never passes a program or a file path.
 - Smart select downloads only fixed URLs, each checked against a pinned size and SHA-256 before use; the DLL is
   loaded from the app data dir by absolute path.
 - `withGlobalTauri` is off (the API comes from the bundled `@tauri-apps/api`), no capability has `remote` URLs, so

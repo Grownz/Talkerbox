@@ -108,7 +108,9 @@
     onkeydown={onButtonKey}
   >
     {@render flag(current?.country ?? null)}
-    <span class="vn">{current?.label ?? 'Choose voice'}</span>
+    <span class="vn"
+      >{current?.name ?? 'Choose voice'}{#if current?.gender}<span class="vg">&nbsp;({current.gender})</span>{/if}</span
+    >
     <Icon name="chev-down" />
   </button>
   {#if open}

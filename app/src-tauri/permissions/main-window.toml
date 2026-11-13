@@ -69,4 +69,6 @@ permissions = [
   "allow-avatar-image",
   "allow-avatar-fill",
   "allow-avatar-save-fill",
+  "allow-open-link",
+  "allow-open-notices",
 ]
