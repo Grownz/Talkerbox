@@ -5,7 +5,7 @@ A Windows desktop chatbot that talks back. Talkerbox chats with a language model
 speech engine, listens to your voice, and can show a talking avatar made from your own picture. Everything runs on
 your computer; after the one-time model downloads it works offline.
 
-> Status: early pre-release (0.6.0). The installer is not code-signed, so Windows SmartScreen warns on first start.
+> Status: early pre-release (0.6.1). The installer is not code-signed, so Windows SmartScreen warns on first start.
 
 [Changelog](CHANGELOG.md) · [Developer documentation](app/README.md) · [TTS sidecar](tts-sidecar/README.md) ·
 [Security](SECURITY.md) · [MIT licence](LICENSE)
@@ -158,8 +158,8 @@ New-Item -ItemType Directory -Force app\src-tauri\binaries | Out-Null
 Copy-Item tts-sidecar\dist\tts-sidecar-x86_64-pc-windows-msvc.exe app\src-tauri\binaries\ -Force
 ```
 
-`build.ps1` creates `tts-sidecar\.venv` with the default `py -3` interpreter, installs `requirements-dev.txt`
-(kokoro-onnx, PyInstaller, pytest) and writes a single-file exe of about 38 MB to `tts-sidecar\dist\`. Tauri bundles
+`build.ps1` creates `tts-sidecar\.venv` with the default `py -3` interpreter, installs the pinned `requirements-lock.txt`
+(kokoro-onnx, PyInstaller, pytest, exact versions) and writes a single-file exe of about 38 MB to `tts-sidecar\dist\`. Tauri bundles
 `app\src-tauri\binaries\tts-sidecar-x86_64-pc-windows-msvc.exe`, so that file must exist. To build without spoken
 replies, create an empty placeholder instead; the app then reports speech as unavailable:
 

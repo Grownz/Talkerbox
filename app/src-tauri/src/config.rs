@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
@@ -67,26 +68,65 @@ impl Default for Settings {
 // Serialises load-modify-save cycles from different commands.
 static LOCK: Mutex<()> = Mutex::new(());
 
+// A file held briefly by antivirus or backup tools is read again before giving up.
+const READ_RETRIES: u32 = 3;
+const READ_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Applies `f` to the stored settings and saves them.
 pub fn update<R>(app: &AppHandle, f: impl FnOnce(&mut Settings) -> R) -> Result<R, String> {
+    update_at(&file(app)?, f)
+}
+
+fn update_at<R>(path: &Path, f: impl FnOnce(&mut Settings) -> R) -> Result<R, String> {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut s = load(app);
+    let mut tries = 0;
+    let read = loop {
+        match std::fs::read(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound && tries < READ_RETRIES => {
+                tries += 1;
+                std::thread::sleep(READ_RETRY_DELAY);
+            }
+            r => break r,
+        }
+    };
+    let mut s = match read {
+        Ok(b) => match parse(&b) {
+            Some(s) => s,
+            None => keep_bad(path).map(|()| Settings::default())?,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Settings::default(),
+        // An unreadable (e.g. locked) file must not be replaced by defaults.
+        Err(e) => return Err(format!("Cannot read {}: {e}", path.display())),
+    };
     let r = f(&mut s);
-    save(app, &s)?;
+    write_atomic(path, &serde_json::to_vec_pretty(&s).map_err(|e| e.to_string())?)?;
     Ok(r)
+}
+
+/// Moves an unparseable settings file to `<name>.bad` (or `.bad.1`, `.bad.2`, ...) so it is not overwritten.
+fn keep_bad(path: &Path) -> Result<(), String> {
+    let bad = |n: u32| {
+        let mut p = path.as_os_str().to_owned();
+        p.push(if n == 0 { ".bad".to_string() } else { format!(".bad.{n}") });
+        PathBuf::from(p)
+    };
+    let target = (0..).map(bad).find(|p| !p.exists()).expect("unbounded range");
+    std::fs::rename(path, &target).map_err(|e| format!("Cannot keep unreadable {}: {e}", path.display()))
 }
 
 /// Saves settings coming from the UI. Fields owned by backend commands keep their stored values.
 pub fn save_from_ui(app: &AppHandle, ui: Settings) -> Result<(), String> {
-    update(app, |s| {
-        *s = Settings {
-            ollama_path: s.ollama_path.take(),
-            tts_model_dir: s.tts_model_dir.take(),
-            display_names: std::mem::take(&mut s.display_names),
-            avatar_bounds: s.avatar_bounds.take(),
-            ..ui
-        }
-    })
+    update(app, |s| from_ui(s, ui))
+}
+
+fn from_ui(s: &mut Settings, ui: Settings) {
+    *s = Settings {
+        ollama_path: s.ollama_path.take(),
+        tts_model_dir: s.tts_model_dir.take(),
+        display_names: std::mem::take(&mut s.display_names),
+        avatar_bounds: s.avatar_bounds.take(),
+        ..ui
+    }
 }
 
 fn file(app: &AppHandle) -> Result<PathBuf, String> {
@@ -95,13 +135,30 @@ fn file(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 pub fn load(app: &AppHandle) -> Settings {
-    // A missing or corrupt file falls back to defaults rather than blocking startup.
-    file(app).ok().and_then(|f| std::fs::read(f).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    file(app).map(|f| load_from(&f)).unwrap_or_default()
 }
 
-fn save(app: &AppHandle, s: &Settings) -> Result<(), String> {
-    let f = file(app)?;
-    write_atomic(&f, &serde_json::to_vec_pretty(s).map_err(|e| e.to_string())?)
+fn load_from(path: &Path) -> Settings {
+    // A missing or corrupt file falls back to defaults rather than blocking startup.
+    std::fs::read(path).ok().and_then(|b| parse(&b)).unwrap_or_default()
+}
+
+/// Parses settings field by field: a field with a wrong type or range keeps its default, the others are kept.
+/// None only if the bytes are not a JSON object at all.
+fn parse(bytes: &[u8]) -> Option<Settings> {
+    let serde_json::Value::Object(stored) = serde_json::from_slice(bytes).ok()? else { return None };
+    let serde_json::Value::Object(mut merged) = serde_json::to_value(Settings::default()).ok()? else { return None };
+    for (k, v) in stored {
+        // Unknown keys are dropped, as plain deserialisation did.
+        let Some(old) = merged.insert(k.clone(), v) else {
+            merged.remove(&k);
+            continue;
+        };
+        if serde_json::from_value::<Settings>(serde_json::Value::Object(merged.clone())).is_err() {
+            merged.insert(k, old);
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(merged)).ok()
 }
 
 /// Writes `bytes` to a temp file next to `f`, then renames it over `f`, so readers never see half a file.
@@ -112,6 +169,110 @@ pub fn write_atomic(f: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut tmp = f.as_os_str().to_owned();
     tmp.push(".tmp");
     let err = |e: std::io::Error| format!("Cannot write {}: {e}", f.display());
-    std::fs::write(&tmp, bytes).map_err(err)?;
+    // sync_all before the rename, so a crash cannot leave an empty file under the final name.
+    let mut t = std::fs::File::create(&tmp).map_err(err)?;
+    t.write_all(bytes).and_then(|()| t.sync_all()).map_err(err)?;
+    drop(t);
     std::fs::rename(&tmp, f).map_err(err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("talkerbox-cfg-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn corrupt_file_is_kept_as_bad_and_never_overwritten() {
+        let d = dir("corrupt");
+        let f = d.join("settings.json");
+        std::fs::write(&f, b"{ broken one").unwrap();
+        update_at(&f, |s| s.last_model = Some("a".into())).unwrap();
+        assert_eq!(std::fs::read(d.join("settings.json.bad")).unwrap(), b"{ broken one");
+        assert_eq!(load_from(&f).last_model.as_deref(), Some("a"));
+        // A second corrupt file must not replace the first backup.
+        std::fs::write(&f, b"{ broken two").unwrap();
+        update_at(&f, |_| ()).unwrap();
+        assert_eq!(std::fs::read(d.join("settings.json.bad")).unwrap(), b"{ broken one");
+        let bads = std::fs::read_dir(&d).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().contains(".bad")).count();
+        assert_eq!(bads, 2);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn wrongly_typed_field_falls_back_alone() {
+        let d = dir("lenient");
+        let f = d.join("settings.json");
+        std::fs::write(&f, br#"{"sttIdleSecs":5.5,"lastModel":"x","displayNames":{"m":"N"}}"#).unwrap();
+        let s = load_from(&f);
+        assert_eq!(s.last_model.as_deref(), Some("x"));
+        assert_eq!(s.display_names.get("m").map(String::as_str), Some("N"));
+        assert_eq!(s.stt_idle_secs, Settings::default().stt_idle_secs);
+        update_at(&f, |_| ()).unwrap();
+        assert!(!d.join("settings.json.bad").exists());
+        assert_eq!(load_from(&f).last_model.as_deref(), Some("x"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn unreadable_path_is_an_error_and_left_alone() {
+        let d = dir("unreadable");
+        let f = d.join("settings.json");
+        std::fs::create_dir(&f).unwrap();
+        let t = std::time::Instant::now();
+        assert!(update_at(&f, |_| ()).is_err());
+        assert!(t.elapsed() >= READ_RETRY_DELAY * READ_RETRIES, "the read was not retried");
+        assert!(f.is_dir());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn missing_file_gives_defaults_without_bad_copy() {
+        let d = dir("missing");
+        let f = d.join("settings.json");
+        assert_eq!(load_from(&f).stt_idle_secs, Settings::default().stt_idle_secs);
+        update_at(&f, |_| ()).unwrap();
+        assert!(f.is_file());
+        assert!(!d.join("settings.json.bad").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn save_from_ui_keeps_backend_owned_fields() {
+        let d = dir("ui");
+        let f = d.join("settings.json");
+        update_at(&f, |s| {
+            s.ollama_path = Some("C:/ollama.exe".into());
+            s.tts_model_dir = Some("D:/tts".into());
+            s.display_names.insert("m".into(), "Name".into());
+            s.avatar_bounds = Some([1.0, 2.0, 3.0, 4.0]);
+            s.last_model = Some("old".into());
+        })
+        .unwrap();
+        let ui = Settings { last_model: Some("new".into()), stt_idle_secs: 9, ollama_path: None, ..Settings::default() };
+        update_at(&f, |s| from_ui(s, ui)).unwrap();
+        let s = load_from(&f);
+        assert_eq!(s.ollama_path.as_deref(), Some("C:/ollama.exe"));
+        assert_eq!(s.tts_model_dir.as_deref(), Some("D:/tts"));
+        assert_eq!(s.display_names.get("m").map(String::as_str), Some("Name"));
+        assert_eq!(s.avatar_bounds, Some([1.0, 2.0, 3.0, 4.0]));
+        assert_eq!((s.last_model.as_deref(), s.stt_idle_secs), (Some("new"), 9));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn write_atomic_leaves_no_tmp() {
+        let d = dir("atomic");
+        let f = d.join("x.json");
+        write_atomic(&f, b"1").unwrap();
+        write_atomic(&f, b"22").unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"22");
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

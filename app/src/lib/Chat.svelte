@@ -189,7 +189,11 @@
         if (!continuous) {
           draft(e)
           listening = false
-          send()
+          // A reply in progress queues the text, as in continuous mode, instead of leaving it unsent in the box.
+          if (!opId) return void send()
+          const text = input.trim()
+          input = ''
+          if (text) queued = joinDraft(queued, text)
           return
         }
         // Continuous: listening goes on with a fresh transcript; a reply in progress queues the text.
@@ -573,7 +577,7 @@
 
 <footer class="composer">
   <!-- Always present so screen readers announce the hold progress and mode changes. -->
-  <div class="stt-status" role="status" hidden={!listening && !holding}>
+  <div class="stt-status" role="status" hidden={!listening && !holding && !queued}>
     {#if holding}
       <Icon name="mic" />Hold to keep listening… (5 s)
     {:else if listening}
@@ -583,6 +587,8 @@
           ? `Continuous listening (${sttLanguageName(settings.sttLanguage)}): sends after ${settings.sttIdleSecs} s without new words or at a sentence end after about 100 words, then keeps listening`
           : `Listening (${sttLanguageName(settings.sttLanguage)}): sends after ${settings.sttIdleSecs} s without new words`}
       {#if queued}<span class="queued">· text queued until the reply is done</span>{/if}
+    {:else if queued}
+      <Icon name="mic" />Dictated text queued until the reply is done
     {/if}
   </div>
   <div class="comp-box" class:listening>

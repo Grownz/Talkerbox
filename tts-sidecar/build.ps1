@@ -8,7 +8,7 @@ if (-not (Test-Path $py)) {
     py -3 -m venv .venv
     if ($LASTEXITCODE) { throw "creating venv failed (Python 3.10+ required)" }
 }
-& $py -m pip install -q -r requirements-dev.txt
+& $py -m pip install -q -r requirements-lock.txt
 if ($LASTEXITCODE) { throw "pip install failed" }
 
 # --collect-all bundles package data PyInstaller cannot see as imports:

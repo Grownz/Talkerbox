@@ -5,6 +5,37 @@ versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versi
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-14
+
+### Fixed
+- A `settings.json` that cannot be read is kept as `settings.json.bad` instead of being overwritten with defaults.
+- One wrongly typed setting in `settings.json` no longer resets all the others; only that setting gets its default.
+- A broken voice file with a huge hidden entry no longer crashes speech start.
+- Speech input can no longer keep listening after leaving the chat during its start-up.
+- A speech input model can no longer be removed or replaced while speech input is starting with it.
+- An interrupted download that no longer matches the file on the server is not installed; a complete one is still
+  recognised when the server does not report the file size on resume.
+- Dictated text that ends while a reply is still being written is no longer left unsent in the input box; it is queued
+  and sent when the reply is done, as in continuous listening.
+- No more "Speech failed" message after switching speech off while a sentence was being synthesised.
+- Avatar images, character thumbnails and AI-fill images are freed when loading is overtaken, fails or the view closes
+  (docking or undocking during a load could keep up to 20 MB per image in memory).
+- Speech input models, the default Kokoro voice files and the featured German voice packs are checked against a fixed
+  SHA-256 before they are kept; a corrupted or changed download is deleted and fails with a clear message.
+- Smart select, AI fill and face-model downloads no longer leave a file that only looks complete if the app is closed
+  during the checksum check.
+- Featured voice packs download from a fixed HuggingFace revision, so an upstream change cannot swap the files.
+- The Kokoro file download only accepts .onnx and .bin links, and the GGUF import only accepts .gguf links.
+- Starting a new GGUF import deletes leftovers of earlier aborted GGUF downloads, so they no longer fill the disk.
+- The speech sidecar picks its own port and holds it exclusively, so no other program can listen on it (takes effect
+  with a rebuilt `tts-sidecar.exe`).
+- A voice pack whose model fails to load is no longer retried on every sentence (which blocked the default voices);
+  it is retried once the pack file changes or the app restarts. Stalled sidecar requests time out after 30 s.
+
+### Changed
+- Dragging a slider saves the settings once at the end instead of on every step; changes still show immediately.
+- The speech sidecar build installs the pinned packages from `requirements-lock.txt`.
+
 ## [0.6.0] - 2026-11-13
 
 ### Added
@@ -179,7 +210,8 @@ First early release.
 - The speech engine only accepts local requests (local Host header, JSON content type) and rejects oversized or
   malformed voice files.
 
-[Unreleased]: https://github.com/Grownz/Talkerbox/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Grownz/Talkerbox/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/Grownz/Talkerbox/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Grownz/Talkerbox/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/Grownz/Talkerbox/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Grownz/Talkerbox/compare/v0.4.0...v0.5.0

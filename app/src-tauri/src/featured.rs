@@ -21,6 +21,9 @@ pub struct FeaturedFile {
     pub url: &'static str,
     /// Exact size in bytes from the repository listing; downloads must match it.
     pub size: u64,
+    /// SHA-256 (the LFS oid from the HF tree API at the pinned commit); checked before the file is kept.
+    #[serde(skip)]
+    pub sha256: &'static str,
     /// File name inside the pack folder (after conversion).
     pub file: &'static str,
     #[serde(skip)]
@@ -47,14 +50,16 @@ pub static FEATURED: [Featured; 2] = [
         license: "Apache-2.0",
         source: "https://huggingface.co/Godelaune/Kokoro-82M-ONNX-German-Martin",
         model: FeaturedFile {
-            url: "https://huggingface.co/Godelaune/Kokoro-82M-ONNX-German-Martin/resolve/main/kokoro-martin.onnx",
+            url: "https://huggingface.co/Godelaune/Kokoro-82M-ONNX-German-Martin/resolve/a1cba7fbf0e72fbae38f0a3a48ce0dc8e6077804/kokoro-martin.onnx",
             size: 325_512_630,
+            sha256: "c302f1d8bc7adf40a842cb550e18c39a5026bdb1afdd29dbb700b501cb49276b",
             file: "kokoro-martin.onnx",
             convert: Convert::None,
         },
         voices: &[FeaturedFile {
-            url: "https://huggingface.co/Godelaune/Kokoro-82M-ONNX-German-Martin/resolve/main/voices-martin.npz",
+            url: "https://huggingface.co/Godelaune/Kokoro-82M-ONNX-German-Martin/resolve/a1cba7fbf0e72fbae38f0a3a48ce0dc8e6077804/voices-martin.npz",
             size: 522_506,
+            sha256: "5b9c8553398d7abf67498ce500c186cefaa7b68fed3e3d415da5380670105acd",
             file: "voices-martin.npz",
             convert: Convert::None,
         }],
@@ -66,14 +71,16 @@ pub static FEATURED: [Featured; 2] = [
         license: "Apache-2.0",
         source: "https://huggingface.co/crane-local-ai/Kokoro-82M-v1.0-German-ONNX",
         model: FeaturedFile {
-            url: "https://huggingface.co/crane-local-ai/Kokoro-82M-v1.0-German-ONNX/resolve/main/onnx/model.onnx",
+            url: "https://huggingface.co/crane-local-ai/Kokoro-82M-v1.0-German-ONNX/resolve/eeccb15741604cdc894053e1f4c72bb56c1a59be/onnx/model.onnx",
             size: 336_987_079,
+            sha256: "f541f868499a8186803c72166a09469821e971dbb1e4cd8eb7dcf593f49da0b1",
             file: "model.onnx",
             convert: Convert::None,
         },
         voices: &[FeaturedFile {
-            url: "https://huggingface.co/crane-local-ai/Kokoro-82M-v1.0-German-ONNX/resolve/main/voices/df_kerstin.bin",
+            url: "https://huggingface.co/crane-local-ai/Kokoro-82M-v1.0-German-ONNX/resolve/eeccb15741604cdc894053e1f4c72bb56c1a59be/voices/df_kerstin.bin",
             size: 522_240,
+            sha256: "f96576f656c58221b42ce46c74398dc2a6ffc03b8408abe530d85ebd717ca062",
             file: "df_kerstin.npy",
             convert: Convert::RawStyleToNpy,
         }],
@@ -134,6 +141,12 @@ mod tests {
         for f in &FEATURED {
             assert!(crate::packs::slug(f.id) == f.id, "id must be a valid slug: {}", f.id);
             assert!(f.model.file.ends_with(".onnx") && f.model.url.starts_with("https://huggingface.co/"));
+            for file in std::iter::once(&f.model).chain(f.voices) {
+                // Pinned to a commit (40 hex chars after /resolve/), never a moving branch, and hashed.
+                let rev = file.url.split("/resolve/").nth(1).and_then(|r| r.split('/').next()).unwrap_or("");
+                assert!(rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit()), "{}", file.url);
+                assert!(file.sha256.len() == 64 && file.sha256.chars().all(|c| c.is_ascii_hexdigit()), "{}", file.url);
+            }
             for v in f.voices {
                 assert!(crate::tts::voice_url(v.url).is_ok(), "featured voice link must pass voice checks: {}", v.url);
                 if v.convert == Convert::RawStyleToNpy {

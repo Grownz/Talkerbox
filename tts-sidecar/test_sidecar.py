@@ -10,8 +10,10 @@ import json
 import os
 import pickle
 import shutil
+import socket
 import subprocess
 import sys
+import threading
 import time
 import types
 import urllib.error
@@ -37,7 +39,7 @@ def command(*args):
 HF_PT = HERE / "models" / "hf_af_heart.pt"  # optional: a real hexgrad/Kokoro-82M voice, see README
 
 
-def fake_torch_save(path, arr, prefix="archive"):
+def fake_torch_save(path, arr, prefix="archive", byteorder=b"little"):
     """Write arr the way torch.save does (zip + pickle protocol 2), without torch installed."""
     torch, utils = types.ModuleType("torch"), types.ModuleType("torch._utils")
 
@@ -72,7 +74,7 @@ def fake_torch_save(path, arr, prefix="archive"):
             sys.modules.pop(k) if v is None else sys.modules.__setitem__(k, v)
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(f"{prefix}/data.pkl", buf.getvalue())
-        z.writestr(f"{prefix}/byteorder", "little")
+        z.writestr(f"{prefix}/byteorder", byteorder)
         z.writestr(f"{prefix}/data/0", arr.astype("<f4").tobytes())
         z.writestr(f"{prefix}/version", "3\n")
 
@@ -304,6 +306,113 @@ def test_read_pt_roundtrip_and_rejects_malicious(tmp_path):
     assert (tmp_path / "PWNED.txt").exists()
     if HF_PT.is_file():
         assert tts_sidecar.read_pt(HF_PT).shape == (510, 1, 256)
+
+
+def test_read_pt_rejects_huge_byteorder(tmp_path):
+    # 1 MB of padding that .strip() would reduce to b"little": only the size gate can reject it.
+    fake_torch_save(tmp_path / "v.pt", np.ones((510, 1, 256), np.float32), byteorder=b"little" + b" " * (1 << 20))
+    with pytest.raises(ValueError, match="byteorder"):
+        tts_sidecar.load_voice_file(tmp_path / "v.pt")
+
+
+def rewrite_zip(path, drop=(), add=None):
+    with zipfile.ZipFile(path) as z:
+        items = {n: z.read(n) for n in z.namelist() if n not in drop}
+    items.update(add or {})
+    with zipfile.ZipFile(path, "w") as z:
+        for name, data in items.items():
+            z.writestr(name, data)
+
+
+@pytest.mark.parametrize("mutate,error,match", [
+    (lambda p: p.write_bytes(b"<!DOCTYPE html>"), zipfile.BadZipFile, None),
+    (lambda p: rewrite_zip(p, drop=["archive/data.pkl"]), ValueError, "not a torch zip"),
+    (lambda p: rewrite_zip(p, add={"other/data.pkl": b"x"}), ValueError, "not a torch zip"),
+    (lambda p: rewrite_zip(p, add={"archive/data.pkl": b"x" * (65 * 1024)}), ValueError, "data.pkl too large"),
+    (lambda p: rewrite_zip(p, add={"archive/byteorder": b"big"}), ValueError, "little-endian"),
+    (lambda p: rewrite_zip(p, drop=["archive/data/0"]), ValueError, "missing or wrong size"),
+    (lambda p: rewrite_zip(p, add={"archive/data/0": b"\0" * 100}), ValueError, "missing or wrong size"),
+], ids=["not-zip", "no-pkl", "two-pkl", "huge-pkl", "big-endian", "no-data", "short-data"])
+def test_read_pt_rejects_bad_zips(tmp_path, mutate, error, match):
+    path = tmp_path / "v.pt"
+    fake_torch_save(path, np.ones((510, 1, 256), np.float32))
+    mutate(path)
+    with pytest.raises(error, match=match):
+        tts_sidecar.read_pt(path)
+
+
+class StubKokoro:
+    def create(self, text, voice, speed, lang):
+        return np.zeros(2400, np.float32), 24000
+
+
+@pytest.fixture
+def stub_server(tmp_path, monkeypatch):
+    """In-process sidecar with a stub base model and a pack whose model never loads; needs no model files."""
+    import kokoro_onnx
+    loads = []
+
+    def broken_kokoro(model, voices, vocab_config=None):
+        loads.append(model)
+        raise RuntimeError("truncated model")
+
+    monkeypatch.setattr(kokoro_onnx, "Kokoro", broken_kokoro)
+    style = np.ones((510, 1, 256), np.float32)
+    model = tmp_path / "half.onnx"
+    model.write_bytes(b"half")
+    voices = {"af_base": tts_sidecar.Voice(style, None, "en-us", False, "test"),
+              "pk_voice": tts_sidecar.Voice(style, "pk", "de", False, "test")}
+    handler = tts_sidecar.make_handler(StubKokoro(), voices, {"pk": {"model": model, "vocab": None}}, "unused")
+    httpd = tts_sidecar.Server(("127.0.0.1", 0), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{httpd.server_address[1]}", loads, model
+    httpd.shutdown()
+    httpd.server_close()
+
+
+def test_broken_pack_model_is_not_retried_until_it_changes(stub_server):
+    url, loads, model = stub_server
+    for _ in range(3):
+        assert synth(url, "pk_voice")[0] == 500
+    assert len(loads) == 1
+    assert synth(url, "af_base")[0] == 200  # default voices keep working
+    model.write_bytes(b"now the complete file")  # e.g. the pack was downloaded again
+    assert synth(url, "pk_voice")[0] == 500
+    assert len(loads) == 2
+
+
+def raw_status(url, request):
+    port = int(url.rsplit(":", 1)[1])
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as s:
+        s.sendall(request.replace(b"PORT", str(port).encode()))
+        return int(s.recv(65536).split(b" ", 2)[1])
+
+
+POST = b"POST /synthesize HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nContent-Type: application/json\r\n"
+
+
+@pytest.mark.parametrize("request_bytes,status", [
+    (POST + b"Content-Length: 70000\r\n\r\n", 413),
+    (POST + b"Content-Length: abc\r\n\r\n", 400),
+    (POST + b"Content-Length: -5\r\n\r\n", 400),
+    (POST + b"\r\n", 400),
+    (b"GET /health HTTP/1.0\r\n\r\n", 403),  # no Host header
+    (b"POST /synthesize HTTP/1.0\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}", 403),
+], ids=["too-large", "bad-length", "negative-length", "no-length", "get-no-host", "post-no-host"])
+def test_http_edge_cases(stub_server, request_bytes, status):
+    assert raw_status(stub_server[0], request_bytes) == status
+
+
+def test_port_is_exclusive_and_reads_time_out(stub_server):
+    port = int(stub_server[0].rsplit(":", 1)[1])
+    s = socket.socket()
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        with pytest.raises(OSError):
+            s.bind(("127.0.0.1", port))
+    finally:
+        s.close()
+    assert tts_sidecar.make_handler(None, {}, {}, "").timeout == 30
 
 
 def test_pack_model_loads_lazily_once(server):

@@ -267,7 +267,10 @@ function drawLips(ctx: CanvasRenderingContext2D, t: MouthTex, motion: Motion, co
 }
 
 // Base layers with the fill applied, computed once per source image, size, fill and geometry.
-const baseCache = new WeakMap<object, { key: string; fillImage: CanvasImageSource | null; canvas: HTMLCanvasElement | null }>()
+const baseCache = new WeakMap<
+  object,
+  { key: string; fillImage: CanvasImageSource | null; canvas: HTMLCanvasElement | null; rig: Rig; w: number; h: number }
+>()
 
 /**
  * The base layer (image within the mask) with the area under moving parts cut out or filled per `rig.fill`, for a
@@ -279,10 +282,14 @@ export function baseLayer(rig: Rig, src: CanvasImageSource, w: number, h: number
   const polys = mode === 'none' ? [] : fillPolygons(rig.parts)
   if (!polys.length) return null
   const outline = maskOutline(rig)
-  const key = JSON.stringify([mode, rig.fill?.rect, polys, outline, w, h])
   const hit = baseCache.get(src as object)
   const img = mode === 'ai' && rig.fill?.rect ? (fillImage ?? null) : null
-  if (hit && hit.key === key && hit.fillImage === img) return hit.canvas
+  // The same rig object at the same size skips serialising the geometry every frame (callers never mutate a rig
+  // in place: the editors build a new one on every change).
+  if (hit && hit.rig === rig && hit.w === w && hit.h === h && hit.fillImage === img) return hit.canvas
+  const key = JSON.stringify([mode, rig.fill?.rect, polys, outline, w, h])
+  if (hit && hit.key === key && hit.fillImage === img) return Object.assign(hit, { rig, w, h }).canvas
+  const [rw, rh] = [w, h]
   // shortcut: the editor draws full-size images (up to 8192 px); the fill is computed at 2048 px at most there.
   const s = Math.min(1, 2048 / Math.max(w, h))
   ;[w, h] = [Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s))]
@@ -303,7 +310,7 @@ export function baseLayer(rig: Rig, src: CanvasImageSource, w: number, h: number
     overlayColours(data.data, tg.getImageData(0, 0, w, h).data, hole)
   }
   g.putImageData(data, 0, 0)
-  baseCache.set(src as object, { key, fillImage: img, canvas: c })
+  baseCache.set(src as object, { key, fillImage: img, canvas: c, rig, w: rw, h: rh })
   return c
 }
 

@@ -60,6 +60,7 @@
       const token = ++loading
       let next: Puppet | null = null
       let url = ''
+      let fill: ImageBitmap | null = null
       if (id) {
         try {
           const rig = await api.avatarLoad(id)
@@ -68,13 +69,18 @@
           img.src = url
           await img.decode()
           // The AI fill under moved parts; without it (or if it cannot be read) the classic fill is used.
-          const fill = rig.fill?.mode === 'ai' && rig.fill.image ? await api.avatarFill(id).then(createImageBitmap, () => null) : null
+          fill = rig.fill?.mode === 'ai' && rig.fill.image ? await api.avatarFill(id).then(createImageBitmap, () => null) : null
           if (token === loading) next = new RigPuppet(host, rig, img, fill)
         } catch (e) {
           console.warn(`Avatar character '${id}' could not be shown; using the demo figure`, e)
         }
       }
-      if (token !== loading) return URL.revokeObjectURL(url)
+      // Superseded (a newer call, or unmounted) or failed: free the image (up to 20 MB) and the fill now.
+      if (token !== loading || !next) {
+        URL.revokeObjectURL(url)
+        fill?.close()
+        if (token !== loading) return
+      }
       puppet.destroy?.()
       puppet = next ?? new DemoPuppet(host)
       URL.revokeObjectURL(imageUrl)
@@ -136,6 +142,7 @@
     // Ask the main window for options once the listeners are registered.
     void Promise.all(off).then(ready)
     return () => {
+      loading++ // a load still in flight frees its result instead of showing it
       cancelAnimationFrame(raf)
       clearTimeout(hideTimer)
       ro.disconnect()

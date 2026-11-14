@@ -55,11 +55,13 @@
   onMount(() => {
     closeBtn?.focus()
     let unlisten: (() => void) | undefined
+    let alive = true
     let pending: LogLine[] | null = []
     ;(async () => {
       try {
         // Listen first, then fetch the snapshot; queued live lines are applied after it (seq dedupes overlap).
         unlisten = await listen<LogLine>('ollama-log', (e) => (pending ? pending.push(e.payload) : add(e.payload)))
+        if (!alive) return unlisten() // closed before the listener was attached
         for (const l of await api.ollamaLog()) add(l)
         for (const l of pending ?? []) add(l)
         pending = null
@@ -68,6 +70,7 @@
       }
     })()
     return () => {
+      alive = false
       unlisten?.()
       cancelAnimationFrame(frame)
     }

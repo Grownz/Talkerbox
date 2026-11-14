@@ -11,6 +11,25 @@ use std::time::{Duration, Instant};
 pub const KOKORO_MODEL_URL: &str = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx";
 pub const KOKORO_VOICES_URL: &str = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin";
 
+/// SHA-256 of the default Kokoro files (hashed from the release downloads above; sizes match the GitHub release API).
+/// A release asset can be replaced upstream; then the download fails instead of installing an unknown file.
+pub fn pinned_sha256(url: &str) -> Option<&'static str> {
+    match url {
+        KOKORO_MODEL_URL => Some("7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5"),
+        KOKORO_VOICES_URL => Some("bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"),
+        _ => None,
+    }
+}
+
+/// Validated link for the Kokoro base folder: only a model (.onnx) or voices (.bin) file may be stored there.
+pub fn base_file_url(input: &str) -> Result<(reqwest::Url, String), String> {
+    let (u, name) = crate::download::safe_file_name(input)?;
+    if !has_ext(&name, &["onnx", "bin"]) {
+        return Err("Kokoro files must be a model (.onnx) or voices (.bin) file".into());
+    }
+    Ok((u, name))
+}
+
 /// Where the sidecar can be. Bundled/release builds: Tauri installs `externalBin` next to the main exe
 /// without the target-triple suffix. Dev builds: that copy is only refreshed when the build script reruns,
 /// so it can be a stale placeholder; fall back to the source file in `src-tauri/binaries`.
@@ -64,7 +83,7 @@ pub const MAX_VOICE_BYTES: u64 = 50 << 20;
 pub const MAX_MODEL_BYTES: u64 = 1 << 30;
 pub const MAX_VOCAB_BYTES: u64 = 10 << 20;
 
-fn has_ext(name: &str, exts: &[&str]) -> bool {
+pub fn has_ext(name: &str, exts: &[&str]) -> bool {
     name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && exts.iter().any(|e| e.eq_ignore_ascii_case(ext)))
 }
 
@@ -162,11 +181,13 @@ pub fn custom_voices(dir: &Path) -> Vec<PathBuf> {
     v
 }
 
-fn free_port() -> Result<u16, String> {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| format!("No free port: {e}"))?;
-    l.local_addr().map(|a| a.port()).map_err(|e| e.to_string())
+/// Port from the sidecar's startup line `READY port=<n>`.
+fn ready_port(line: &str) -> Option<u16> {
+    line.trim().strip_prefix("READY port=")?.parse().ok().filter(|&p| p != 0)
 }
 
+/// Starts the sidecar on a port it picks itself (`--port 0`, bound exclusively), so no other process can grab the
+/// port between choosing and binding it. The port arrives on the receiver once the sidecar prints its READY line.
 pub fn spawn(
     exe: &Path,
     model: &Path,
@@ -174,10 +195,9 @@ pub fn spawn(
     voices_dir: Option<&Path>,
     packs_dir: Option<&Path>,
     log: &Path,
-) -> Result<(Child, u16), String> {
-    let port = free_port()?;
+) -> Result<(Child, std::sync::mpsc::Receiver<u16>), String> {
     let mut cmd = std::process::Command::new(exe);
-    cmd.arg("--port").arg(port.to_string()).arg("--model").arg(model).arg("--voices").arg(voices);
+    cmd.arg("--port").arg("0").arg("--model").arg(model).arg("--voices").arg(voices);
     if let Some(d) = voices_dir {
         cmd.arg("--voices-dir").arg(d);
     }
@@ -188,8 +208,20 @@ pub fn spawn(
     // The sidecar exits when its stdin closes. The pipe stays open while the Child is held, and closes
     // when Talkerbox exits or dies, so the sidecar never outlives us.
     cmd.stdin(std::process::Stdio::piped());
-    let child = cmd.spawn().map_err(|e| format!("Failed to start TTS sidecar: {e}"))?;
-    Ok((child, port))
+    cmd.stdout(std::process::Stdio::piped()); // stderr still goes to the log
+    let mut child = cmd.spawn().map_err(|e| format!("Failed to start TTS sidecar: {e}"))?;
+    let out = child.stdout.take().ok_or("TTS sidecar has no stdout")?;
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        // Read to EOF so the pipe never fills, even though only the READY line matters.
+        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            if let Some(p) = ready_port(&line) {
+                let _ = tx.try_send(p);
+            }
+        }
+    });
+    Ok((child, rx))
 }
 
 pub async fn healthy(http: &reqwest::Client, port: u16) -> bool {
@@ -197,15 +229,23 @@ pub async fn healthy(http: &reqwest::Client, port: u16) -> bool {
     matches!(r, Ok(r) if r.status().is_success())
 }
 
-/// Polls /health until ready, failing early if the process exits.
-pub async fn wait_ready(http: &reqwest::Client, port: u16, mut exited: impl FnMut() -> Option<String>) -> Result<(), String> {
+/// Waits for the READY port, then polls /health until ready, failing early if the process exits. Returns the port.
+pub async fn wait_ready(
+    http: &reqwest::Client,
+    ready: std::sync::mpsc::Receiver<u16>,
+    mut exited: impl FnMut() -> Option<String>,
+) -> Result<u16, String> {
     let start = Instant::now();
+    let mut port = None;
     while start.elapsed() < Duration::from_secs(60) {
         if let Some(code) = exited() {
             return Err(format!("TTS sidecar exited ({code}); see sidecar.log in the app data folder"));
         }
-        if healthy(http, port).await {
-            return Ok(());
+        port = port.or_else(|| ready.try_recv().ok());
+        if let Some(p) = port {
+            if healthy(http, p).await {
+                return Ok(p);
+            }
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
@@ -252,7 +292,28 @@ pub async fn synthesize(http: &reqwest::Client, port: u16, text: &str, voice: &s
 
 #[cfg(test)]
 mod tests {
-    use super::{link_kind, voice_url, LinkKind};
+    use super::{base_file_url, link_kind, pinned_sha256, ready_port, voice_url, LinkKind, KOKORO_MODEL_URL, KOKORO_VOICES_URL};
+
+    #[test]
+    fn ready_line() {
+        assert_eq!(ready_port("READY port=51234\r\n"), Some(51234));
+        assert_eq!(ready_port("READY port=0"), None);
+        assert_eq!(ready_port("READY port=99999"), None);
+        assert_eq!(ready_port("warning: READY port=1"), None);
+    }
+
+    #[test]
+    fn base_files_only_onnx_or_bin() {
+        let name = |u: &str| base_file_url(u).map(|(_, n)| n);
+        assert_eq!(name(KOKORO_MODEL_URL).as_deref(), Ok("kokoro-v1.0.onnx"));
+        assert_eq!(name(KOKORO_VOICES_URL).as_deref(), Ok("voices-v1.0.bin"));
+        assert_eq!(name("https://x.org/m/Model.ONNX").as_deref(), Ok("Model.ONNX"));
+        for bad in ["https://x.org/ollama.exe", "https://x.org/a.onnx.exe", "https://x.org/run.bat?f=.bin", "https://x.org/.onnx"] {
+            assert!(base_file_url(bad).is_err(), "{bad}");
+        }
+        assert!(pinned_sha256(KOKORO_MODEL_URL).is_some() && pinned_sha256(KOKORO_VOICES_URL).is_some());
+        assert_eq!(pinned_sha256("https://x.org/kokoro-v1.0.onnx"), None);
+    }
 
     #[test]
     fn link_kinds() {

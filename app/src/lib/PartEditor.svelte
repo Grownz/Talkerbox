@@ -5,8 +5,9 @@
   import { onMount } from 'svelte'
   import { api, errText } from './api'
   import Btn from './Btn.svelte'
-  import { checker, fitView as fitTo, fitZoom, hitEdge, hitPoint, zoomView, type View } from './canvasView'
+  import { checker, hitEdge, hitPoint, ImageView } from './canvasView'
   import { fit } from './fit'
+  import { History } from './history.svelte'
   import Icon from './Icon.svelte'
   import { pointInPolygon } from './maskGeometry'
   import {
@@ -73,7 +74,6 @@
   const nameOf = (p: EPart) => p.label.trim() || roleInfo(p.role).label
   const isEye = (r: PartRole) => r === 'eyeL' || r === 'eyeR'
   const POSE_LABEL: Record<(typeof LIMB_ROLES)[number], string> = { armL: 'Left arm', armR: 'Right arm', legL: 'Left leg', legR: 'Right leg' }
-  const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 
   // svelte-ignore state_referenced_locally
   let W = rig.image.width
@@ -97,8 +97,6 @@
   let preview = $state<'off' | 'checker' | 'green' | 'dark'>('off')
   let pose = $state.raw<Pose>(REST)
   let playing = $state(false)
-  let undoStack = $state.raw<Snapshot[]>([])
-  let redoStack = $state.raw<Snapshot[]>([])
   let clean = $state('')
   let status = $state('')
   let failed = $state(false)
@@ -122,10 +120,7 @@
 
   let canvas: HTMLCanvasElement
   let wrap: HTMLDivElement
-  let cw = 0
-  let ch = 0
-  let view: View = { z: 1, ox: 0, oy: 0 }
-  let fitted = true
+  const vp = new ImageView(() => [W, H], () => draw())
 
   const sel = $derived(parts.find((p) => p.id === selId) ?? null)
   const sub = $derived(target !== 'polygon' && sel?.role === 'mouth' ? target : null)
@@ -214,6 +209,7 @@
             : 'Drag points or the pivot crosshair (the point the part turns about); click an edge to insert a point; right-click or Delete removes one. Click another part to select it.',
   )
 
+  let fillLoad = 0
   function load(r: Rig) {
     base = r
     parts = [...r.parts]
@@ -226,31 +222,33 @@
     mouthColor = r.mouth?.color ?? DEFAULT_MOUTH
     fill = { ...NO_FILL, mode: r.fill?.mode ?? 'none', rect: r.fill?.rect ?? null, sig: r.fill?.sig ?? null, stored: !!r.fill?.image }
     // The stored AI fill for the preview (not part of the undo key; a failed read shows the classic fill).
+    const token = ++fillLoad
     if (r.fill?.image)
       void api
         .avatarFill(r.id)
         .then(createImageBitmap)
-        .then((img) => (fill = fill.stored && !fill.png ? { ...fill, img } : fill), () => {})
+        .then((img) => {
+          // A newer load, a new fill or a closed editor drops it: free the bitmap right away.
+          if (token === fillLoad && fill.stored && !fill.png) fill = { ...fill, img }
+          else img.close()
+        }, () => {})
     if (!parts.some((p) => p.id === selId)) selId = parts[0]?.id ?? null
     target = 'polygon'
     selPoint = -1
-    undoStack = []
-    redoStack = []
+    history.clear()
     clean = key()
   }
 
   // ---------- history ----------
-  const snapshot = (): Snapshot => ({ parts, subs, corners, mouthColor, warp, fill })
-  function push(s: Snapshot) {
-    undoStack = [...undoStack.slice(-199), s]
-    redoStack = []
-  }
-  const commit = () => push(snapshot())
-  function restore(s: Snapshot) {
-    ;({ parts, subs, corners, mouthColor, warp, fill } = s)
-    if (!parts.some((p) => p.id === selId)) selId = parts[0]?.id ?? null
-    selPoint = -1
-  }
+  const history = new History<Snapshot>(
+    () => ({ parts, subs, corners, mouthColor, warp, fill }),
+    (s) => {
+      ;({ parts, subs, corners, mouthColor, warp, fill } = s)
+      if (!parts.some((p) => p.id === selId)) selId = parts[0]?.id ?? null
+      selPoint = -1
+    },
+  )
+  const commit = () => history.commit()
   function setFillMode(mode: FillMode) {
     commit()
     fill = { ...fill, mode }
@@ -264,27 +262,11 @@
 
   /** While picking, Undo removes the last Smart select point first. */
   const undoAny = () => (picking && smart.prompts.length ? smart.undo() : undo())
-  function undo() {
-    const s = undoStack.at(-1)
-    if (!s) return
-    redoStack = [...redoStack, snapshot()]
-    undoStack = undoStack.slice(0, -1)
-    restore(s)
-  }
-  function redo() {
-    const s = redoStack.at(-1)
-    if (!s) return
-    undoStack = [...undoStack, snapshot()]
-    redoStack = redoStack.slice(0, -1)
-    restore(s)
-  }
+  const undo = () => history.undo()
+  const redo = () => history.redo()
   // A colour-picker drag is one undo step, pushed when it ends.
-  let pending: Snapshot | null = null
-  const begin = () => (pending ??= snapshot())
-  function end() {
-    if (pending) push(pending)
-    pending = null
-  }
+  const begin = () => history.begin()
+  const end = () => history.end()
 
   // ---------- edits ----------
   const update = (id: string, f: (p: EPart) => EPart) => (parts = parts.map((p) => (p.id === id ? f(p) : p)))
@@ -398,7 +380,7 @@
     select(made.at(-1)!.id)
     preview = 'off'
     const names = made.map((p) => roleInfo(p.role).label.toLowerCase()).join(', ')
-    faceNote = { text: `Added ${names}${made.some((p) => p.role === 'mouth') ? ' with both lips' : ''}${kept.length ? `; kept your ${kept.join(', ')}` : ''}. Check the outlines and drag points to fit.`, at: undoStack.length }
+    faceNote = { text: `Added ${names}${made.some((p) => p.role === 'mouth') ? ' with both lips' : ''}${kept.length ? `; kept your ${kept.join(', ')}` : ''}. Check the outlines and drag points to fit.`, at: history.undoStack.length }
   }
 
   const pickColour = (r: PartRole): [number, number, number] => {
@@ -498,33 +480,11 @@
   }
 
   // ---------- view ----------
-  const toScreen = ([x, y]: Point): Point => [x * W * view.z + view.ox, y * H * view.z + view.oy]
-  const toNorm = (sx: number, sy: number): Point => [clamp01((sx - view.ox) / view.z / W), clamp01((sy - view.oy) / view.z / H)]
-  function fitView() {
-    view = fitTo(cw, ch, W, H)
-    fitted = true
-    draw()
-  }
-  function zoomAt(f: number, sx = cw / 2, sy = ch / 2) {
-    view = zoomView(view, f, sx, sy, fitZoom(cw, ch, W, H))
-    fitted = false
-    draw()
-  }
-  function panBy(dx: number, dy: number) {
-    view = { ...view, ox: view.ox + dx, oy: view.oy + dy }
-    fitted = false
-    draw()
-  }
-  function resize() {
-    const r = wrap.getBoundingClientRect()
-    cw = r.width
-    ch = r.height
-    const dpr = devicePixelRatio || 1
-    canvas.width = Math.round(cw * dpr)
-    canvas.height = Math.round(ch * dpr)
-    if (fitted) fitView()
-    else draw()
-  }
+  const { toScreen, toNorm } = vp
+  const fitView = () => vp.fit()
+  const zoomAt = (f: number, sx?: number, sy?: number) => vp.zoomAt(f, sx, sy)
+  const panBy = (dx: number, dy: number) => vp.panBy(dx, dy)
+  const resize = () => vp.resize(wrap, canvas)
 
   // ---------- drawing ----------
   let raf = 0
@@ -535,6 +495,7 @@
   function paintView() {
     raf = 0
     const ctx = canvas?.getContext('2d')
+    const { cw, ch } = vp
     if (!ctx || !cw) return
     const dpr = canvas.width / cw
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -546,7 +507,7 @@
       ctx.fillRect(0, 0, cw, ch)
     }
     if (!bitmap) return
-    const { z, ox, oy } = view
+    const { z, ox, oy } = vp.view
     ctx.imageSmoothingQuality = 'high'
     if (preview !== 'off') {
       ctx.save()
@@ -699,7 +660,7 @@
     if (pointers.size > 2) return
     if (e.button === 1 || spaceDown || (e.button === 0 && preview !== 'off')) {
       e.preventDefault()
-      drag = { kind: 'pan', sx, sy, ox: view.ox, oy: view.oy }
+      drag = { kind: 'pan', sx, sy, ox: vp.view.ox, oy: vp.view.oy }
       panning = true
       return
     }
@@ -760,9 +721,9 @@
       return
     }
     if (drag?.kind === 'pan') {
-      view = { ...view, ox: drag.ox + sx - drag.sx, oy: drag.oy + sy - drag.sy }
+      vp.view = { ...vp.view, ox: drag.ox + sx - drag.sx, oy: drag.oy + sy - drag.sy }
       // A plain click (preview mode pans on any press) must not stop the view refitting on resize.
-      if (sx !== drag.sx || sy !== drag.sy) fitted = false
+      if (sx !== drag.sx || sy !== drag.sy) vp.fitted = false
     } else if (drag?.kind === 'smart') {
       smart.move(toNorm(sx, sy), sx, sy)
     } else if (drag && sel) {
@@ -931,6 +892,7 @@
     canvas.addEventListener('wheel', wheel, { passive: false })
     return () => {
       alive = false
+      fillLoad++ // a stored fill still loading is freed, not shown
       ro.disconnect()
       canvas.removeEventListener('wheel', wheel)
       cancelAnimationFrame(raf)
@@ -973,10 +935,10 @@
         icon="undo"
         label="Undo"
         title={picking && smart.prompts.length ? 'Remove the last smart select point (Ctrl+Z)' : 'Undo (Ctrl+Z)'}
-        disabled={!undoStack.length && !(picking && smart.prompts.length)}
+        disabled={!history.undoStack.length && !(picking && smart.prompts.length)}
         onclick={undoAny}
       />
-      <Btn icon="redo" label="Redo" title="Redo (Ctrl+Y or Ctrl+Shift+Z)" disabled={!redoStack.length} onclick={redo} />
+      <Btn icon="redo" label="Redo" title="Redo (Ctrl+Y or Ctrl+Shift+Z)" disabled={!history.redoStack.length} onclick={redo} />
       <Btn
         icon="trash"
         label={sub === 'interior' ? 'Clear open shape' : sub ? 'Clear lip' : 'Clear outline'}
@@ -1043,7 +1005,7 @@
             <FacePanel image={() => ({ bitmap, W, H })} disabled={parts.length >= MAX_PARTS} onResult={applyFace} />
             {#if faceNote}
               <span class="help">{faceNote.text}</span>
-              {#if faceNote.at === undoStack.length}
+              {#if faceNote.at === history.undoStack.length}
                 <button type="button" class="sm" title="Remove the detected parts again (Ctrl+Z)" onclick={() => ((faceNote = null), undo())}><Icon name="undo" />Undo</button>
               {/if}
             {/if}

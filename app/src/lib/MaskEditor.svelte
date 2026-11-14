@@ -6,8 +6,9 @@
   import { onMount } from 'svelte'
   import { api, errText } from './api'
   import Btn from './Btn.svelte'
-  import { checker, fitView as fitTo, fitZoom, hitEdge as edgeAt, hitPoint as pointAt, zoomView, type View } from './canvasView'
+  import { checker, hitEdge as edgeAt, hitPoint as pointAt, ImageView } from './canvasView'
   import { fit } from './fit'
+  import { History } from './history.svelte'
   import Icon, { type IconName } from './Icon.svelte'
   import {
     MAX_MASK_POINTS,
@@ -69,8 +70,6 @@
   let tolerance = $state(12)
   let preview = $state<'off' | 'checker' | 'green' | 'dark'>('off')
   let selected = $state(-1)
-  let undoStack = $state.raw<Snapshot[]>([])
-  let redoStack = $state.raw<Snapshot[]>([])
   let clean = $state('')
   let status = $state('')
   let failed = $state(false)
@@ -86,10 +85,7 @@
 
   let canvas: HTMLCanvasElement
   let wrap: HTMLDivElement
-  let cw = 0
-  let ch = 0
-  let view: View = { z: 1, ox: 0, oy: 0 }
-  let fitted = true
+  const vp = new ImageView(() => [W, H], () => draw())
 
   // Shown and saved outline: drawn points, snapped to edges, then smoothed (all in working pixels).
   const result = $derived.by((): Point[] => {
@@ -136,51 +132,32 @@
     closed = raw.length >= 3
     smooth = Math.round((r.mask.smooth ?? 0) * 100)
     snap = Math.round((r.mask.snap ?? 0) * 100)
-    undoStack = []
-    redoStack = []
+    history.clear()
     selected = -1
     clean = key()
   }
 
   // ---------- history ----------
-  const snapshot = (): Snapshot => ({ raw, closed, smooth, snap })
-  function push(s: Snapshot) {
-    undoStack = [...undoStack.slice(-199), s]
-    redoStack = []
-  }
-  const commit = () => push(snapshot())
-  function restore(s: Snapshot) {
-    raw = s.raw
-    closed = s.closed
-    smooth = s.smooth
-    snap = s.snap
-    selected = -1
-  }
-  function undo() {
-    const s = undoStack.at(-1)
-    if (!s) return
-    redoStack = [...redoStack, snapshot()]
-    undoStack = undoStack.slice(0, -1)
-    restore(s)
-  }
-  function redo() {
-    const s = redoStack.at(-1)
-    if (!s) return
-    undoStack = [...undoStack, snapshot()]
-    redoStack = redoStack.slice(0, -1)
-    restore(s)
-  }
+  const history = new History<Snapshot>(
+    () => ({ raw, closed, smooth, snap }),
+    (s) => {
+      raw = s.raw
+      closed = s.closed
+      smooth = s.smooth
+      snap = s.snap
+      selected = -1
+    },
+  )
+  const commit = () => history.commit()
+  const undo = () => history.undo()
+  const redo = () => history.redo()
   // A slider drag is one undo step: the state before the first input is pushed when the drag ends.
-  let pending: Snapshot | null = null
   function slide(which: 'smooth' | 'snap', v: number) {
-    pending ??= snapshot()
+    history.begin()
     if (which === 'smooth') smooth = v
     else snap = v
   }
-  function slideDone() {
-    if (pending) push(pending)
-    pending = null
-  }
+  const slideDone = () => history.end()
 
   // ---------- edits ----------
   function closeOutline() {
@@ -289,33 +266,11 @@
   const undoAny = () => (tool === 'smart' && smart.prompts.length ? smart.undo() : undo())
 
   // ---------- view ----------
-  const toScreen = ([x, y]: Point): Point => [x * W * view.z + view.ox, y * H * view.z + view.oy]
-  const toNorm = (sx: number, sy: number): Point => [clamp01((sx - view.ox) / view.z / W), clamp01((sy - view.oy) / view.z / H)]
-  function fitView() {
-    view = fitTo(cw, ch, W, H)
-    fitted = true
-    draw()
-  }
-  function zoomAt(f: number, sx = cw / 2, sy = ch / 2) {
-    view = zoomView(view, f, sx, sy, fitZoom(cw, ch, W, H))
-    fitted = false
-    draw()
-  }
-  function panBy(dx: number, dy: number) {
-    view = { ...view, ox: view.ox + dx, oy: view.oy + dy }
-    fitted = false
-    draw()
-  }
-  function resize() {
-    const r = wrap.getBoundingClientRect()
-    cw = r.width
-    ch = r.height
-    const dpr = devicePixelRatio || 1
-    canvas.width = Math.round(cw * dpr)
-    canvas.height = Math.round(ch * dpr)
-    if (fitted) fitView()
-    else draw()
-  }
+  const { toScreen, toNorm } = vp
+  const fitView = () => vp.fit()
+  const zoomAt = (f: number, sx?: number, sy?: number) => vp.zoomAt(f, sx, sy)
+  const panBy = (dx: number, dy: number) => vp.panBy(dx, dy)
+  const resize = () => vp.resize(wrap, canvas)
 
   // ---------- drawing ----------
   let raf = 0
@@ -325,6 +280,7 @@
   function paintView() {
     raf = 0
     const ctx = canvas?.getContext('2d')
+    const { cw, ch } = vp
     if (!ctx || !cw) return
     const dpr = canvas.width / cw
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -336,7 +292,7 @@
       ctx.fillRect(0, 0, cw, ch)
     }
     if (!bitmap) return
-    const { z, ox, oy } = view
+    const { z, ox, oy } = vp.view
     const shape = (pts: Point[], close: boolean) => {
       ctx.beginPath()
       for (const p of pts) ctx.lineTo(...toScreen(p))
@@ -464,7 +420,7 @@
     if (pointers.size > 2) return
     if (e.button === 1 || spaceDown || (e.button === 0 && preview !== 'off')) {
       e.preventDefault()
-      drag = { kind: 'pan', sx, sy, ox: view.ox, oy: view.oy }
+      drag = { kind: 'pan', sx, sy, ox: vp.view.ox, oy: vp.view.oy }
       panning = true
       return
     }
@@ -522,9 +478,9 @@
       return
     }
     if (drag?.kind === 'pan') {
-      view = { ...view, ox: drag.ox + sx - drag.sx, oy: drag.oy + sy - drag.sy }
+      vp.view = { ...vp.view, ox: drag.ox + sx - drag.sx, oy: drag.oy + sy - drag.sy }
       // A plain click (preview mode pans on any press) must not stop the view refitting on resize.
-      if (sx !== drag.sx || sy !== drag.sy) fitted = false
+      if (sx !== drag.sx || sy !== drag.sy) vp.fitted = false
     } else if (drag?.kind === 'point') {
       if (!drag.committed) {
         commit()
@@ -752,10 +708,10 @@
         icon="undo"
         label="Undo"
         title={tool === 'smart' && smart.prompts.length ? 'Remove the last smart select point (Ctrl+Z)' : 'Undo (Ctrl+Z)'}
-        disabled={!undoStack.length && !(tool === 'smart' && smart.prompts.length)}
+        disabled={!history.undoStack.length && !(tool === 'smart' && smart.prompts.length)}
         onclick={undoAny}
       />
-      <Btn icon="redo" label="Redo" title="Redo (Ctrl+Y or Ctrl+Shift+Z)" disabled={!redoStack.length} onclick={redo} />
+      <Btn icon="redo" label="Redo" title="Redo (Ctrl+Y or Ctrl+Shift+Z)" disabled={!history.redoStack.length} onclick={redo} />
       <Btn icon="trash" label="Clear" title="Remove the whole outline (can be undone)" disabled={!raw.length} onclick={clear} />
       <span class="spacer"></span>
       <button type="button" class="icon-only ghost" title="Zoom out (-)" aria-label="Zoom out" onclick={() => zoomAt(0.8)}><Icon name="zoom-out" /></button>

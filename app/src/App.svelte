@@ -115,17 +115,30 @@
     })()
     const timer = setInterval(refresh, 5000)
     const unwatch = watchPuppet(avatarOptions)
+    addEventListener('pagehide', saveNow)
     return () => {
+      saveNow()
+      removeEventListener('pagehide', saveNow)
       clearInterval(timer)
       unwatch()
     }
   })
 
-  // Persist settings whenever any field changes (the first run just stores what was loaded).
+  // Persist settings whenever any field changes (the first run just stores what was loaded). Debounced, so a slider
+  // drag saves once at the end; the latest value is flushed when the page goes away.
+  let unsaved: Settings | null = null
+  let saveTimer: ReturnType<typeof setTimeout> | undefined
+  function saveNow() {
+    clearTimeout(saveTimer)
+    if (!unsaved) return
+    api.saveSettings(unsaved).catch((e) => (error = `Saving settings failed: ${errText(e)}`))
+    unsaved = null
+  }
   $effect(() => {
     if (!settings) return
-    const snapshot = $state.snapshot(settings)
-    api.saveSettings(snapshot).catch((e) => (error = `Saving settings failed: ${errText(e)}`))
+    unsaved = $state.snapshot(settings)
+    clearTimeout(saveTimer)
+    saveTimer = setTimeout(saveNow, 300)
   })
 
   const avatarOptions = (): AvatarOptions => ({

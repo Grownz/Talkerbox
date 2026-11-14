@@ -51,7 +51,7 @@ pub const LONG_SIDE: u32 = 1024;
 const MAX_POINTS: usize = 64;
 const EMBED_LEN: usize = 256 * 64 * 64;
 
-/// Runtime and both models are in place (sizes are checked; hashes were checked when they were downloaded).
+/// Runtime and both models are in place (sizes are checked; hashes were checked before the files got their names).
 pub fn installed(dir: &Path) -> bool {
     let size = |f: &str| std::fs::metadata(dir.join(f)).map(|m| m.len()).ok();
     dir.join(RUNTIME_DLL).is_file() && size(ENCODER.file) == Some(ENCODER.size) && size(DECODER.file) == Some(DECODER.size)
@@ -76,22 +76,21 @@ pub async fn fetch_pinned(
     }
     let url = reqwest::Url::parse(a.url).map_err(|e| e.to_string())?;
     let on = |p: Progress| send(ch, Progress { message: format!("{label}: {}", p.message), ..p });
-    if crate::download::download(http, url, &dest, Some(a.size), cancel, on).await? {
+    // The hash is checked before the file gets its final name, so an aborted check never leaves a file that only
+    // looks installed by its size.
+    if crate::download::download(http, url, &dest, Some(a.size), Some(a.sha256), cancel, on).await? {
         return Ok(true);
     }
-    send(ch, Progress { message: format!("{label}: checking"), completed: None, total: None });
-    let d = dir.to_path_buf();
-    tauri::async_runtime::spawn_blocking(move || {
-        verify(&dest, a)?;
-        if runtime {
+    if runtime {
+        let d = dir.to_path_buf();
+        tauri::async_runtime::spawn_blocking(move || {
             let r = extract_runtime(&dest, &d);
             let _ = std::fs::remove_file(&dest);
-            r?;
-        }
-        Ok::<_, String>(())
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+            r
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+    }
     Ok(false)
 }
 
@@ -138,22 +137,6 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
     let mut h = sha2::Sha256::new();
     std::io::copy(&mut f, &mut h).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(format!("{:x}", h.finalize()))
-}
-
-/// Checks a downloaded file against its pinned size and hash; a bad file is deleted so the next try starts over.
-pub fn verify(path: &Path, a: &Asset) -> Result<(), String> {
-    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let r = if size != a.size {
-        Err(format!("{}: got {size} bytes, expected {}", a.file, a.size))
-    } else if sha256_file(path)? != a.sha256 {
-        Err(format!("{}: checksum mismatch", a.file))
-    } else {
-        Ok(())
-    };
-    if r.is_err() {
-        let _ = std::fs::remove_file(path);
-    }
-    r
 }
 
 /// Unpacks `onnxruntime.dll` from the runtime wheel into `dir` (via a temp file, at most 64 MB).
@@ -330,21 +313,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
-    }
-
-    #[test]
-    fn verify_checks_size_and_hash_and_drops_bad_files() {
-        let d = temp("verify");
-        let f = d.join("a.bin");
-        std::fs::write(&f, b"abc").unwrap();
-        let ok = Asset { url: "", file: "a.bin", size: 3, sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" };
-        assert!(verify(&f, &ok).is_ok());
-        assert!(verify(&f, &Asset { size: 4, ..ok }).unwrap_err().contains("expected 4"));
-        assert!(!f.exists(), "a bad file is deleted");
-        std::fs::write(&f, b"abd").unwrap();
-        assert!(verify(&f, &Asset { size: 3, ..ok }).unwrap_err().contains("checksum"));
-        assert!(!installed(&d));
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

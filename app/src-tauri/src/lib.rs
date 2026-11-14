@@ -141,6 +141,8 @@ struct AppState {
     model_caps: Mutex<HashMap<String, Vec<String>>>,
     job: Option<KillJob>,
     stt: Mutex<Option<stt::Listener>>,
+    /// Serialises speech input start/stop (held across awaits, like `tts_life`).
+    stt_life: tokio::sync::Mutex<()>,
     /// Set while a reply is read aloud: speech input drops the audio (kept across listeners).
     stt_muted: Arc<AtomicBool>,
     /// Smart select model, loaded on first use while a mask editor is open (released when it closes).
@@ -409,13 +411,16 @@ async fn import_gguf_url(
 ) -> Res<bool> {
     let model_name = model_name.trim();
     valid_model_name(model_name)?;
-    let (url, file) = download::safe_file_name(&url)?;
+    let (url, file) = download::gguf_file_name(&url)?;
     // One folder per URL: resume never mixes files, and a finished download is reused when an import is retried.
-    let folder = data_dir(&app)?.join("gguf").join(download::url_hash(url.as_str()));
+    let root = data_dir(&app)?.join("gguf");
+    let folder = root.join(download::url_hash(url.as_str()));
+    // shortcut: assumes one GGUF import at a time (the Models view runs one); track active folders if that changes.
+    download::remove_other_dirs(&root, &folder);
     let dest = folder.join(&file);
     let hf_repo = names::hf_repo_from_url(&url);
     let op = state.op(&id);
-    if !dest.is_file() && download::download(&state.http, url, &dest, None, &op.notify, |p| send(&on_progress, p)).await? {
+    if !dest.is_file() && download::download(&state.http, url, &dest, None, None, &op.notify, |p| send(&on_progress, p)).await? {
         return Ok(true);
     }
     if ollama::import_gguf(&state.http, &dest, model_name, &op.notify, |p| send(&on_progress, p)).await? {
@@ -534,10 +539,11 @@ async fn delete_tts_files(app: AppHandle, state: State<'_, AppState>) -> Res<Tts
 
 #[tauri::command]
 async fn download_tts_file(app: AppHandle, state: State<'_, AppState>, id: String, url: String, on_progress: Channel<Progress>) -> Res<bool> {
-    let (url, file) = download::safe_file_name(&url)?;
+    let (url, file) = tts::base_file_url(&url)?;
     let dest = tts_dir(&app)?.0.join(file);
+    let sha = tts::pinned_sha256(url.as_str());
     let op = state.op(&id);
-    download::download(&state.http, url, &dest, None, &op.notify, |p| send(&on_progress, p)).await
+    download::download(&state.http, url, &dest, None, sha, &op.notify, |p| send(&on_progress, p)).await
 }
 
 /// Extra voices live in `tts/voices` of the app data dir (never in a user-chosen model folder).
@@ -595,7 +601,7 @@ async fn fetch_into(
 ) -> Res<Option<String>> {
     let (u, file) = download::safe_file_name(&url)?;
     let on = |p: Progress| send(ch, Progress { message: format!("{label}: {}", p.message), ..p });
-    if download::download(&state.http, u, &folder.join(&file), Some(max), notify, on).await? {
+    if download::download(&state.http, u, &folder.join(&file), Some(max), None, notify, on).await? {
         return Ok(None);
     }
     Ok(Some(file))
@@ -705,7 +711,7 @@ async fn fetch_featured(
     let (u, raw_name) = download::safe_file_name(f.url)?;
     let raw_path = folder.join(&raw_name);
     let on = |p: Progress| send(ch, Progress { message: format!("{label}: {}", p.message), ..p });
-    if download::download(&state.http, u, &raw_path, Some(f.size), notify, on).await? {
+    if download::download(&state.http, u, &raw_path, Some(f.size), Some(f.sha256), notify, on).await? {
         return Ok(None);
     }
     let got = std::fs::metadata(&raw_path).map(|m| m.len()).unwrap_or(0);
@@ -826,7 +832,7 @@ async fn download_voice(app: AppHandle, state: State<'_, AppState>, id: String, 
     let dest = voices_dir(&app)?.join(file);
     {
         let op = state.op(&id);
-        if download::download(&state.http, url, &dest, Some(tts::MAX_VOICE_BYTES), &op.notify, |p| send(&on_progress, p)).await? {
+        if download::download(&state.http, url, &dest, Some(tts::MAX_VOICE_BYTES), None, &op.notify, |p| send(&on_progress, p)).await? {
             return Ok(true);
         }
     }
@@ -854,7 +860,7 @@ async fn start_tts_locked(app: &AppHandle, state: &AppState) -> Res<()> {
     }
     let exe = tts::sidecar_path()?;
     let (model, voices) = tts::model_files(&tts_dir(app)?.0).ok_or("Kokoro model files are missing; download them in the Models view")?;
-    let (child, port) = tts::spawn(
+    let (child, ready) = tts::spawn(
         &exe,
         &model,
         &voices,
@@ -864,9 +870,9 @@ async fn start_tts_locked(app: &AppHandle, state: &AppState) -> Res<()> {
     )?;
     state.track(&child);
     state.tts.lock().unwrap().child = Some(child);
-    let ready = tts::wait_ready(&state.http, port, || state.tts.lock().unwrap().child.as_mut().and_then(exited)).await;
+    let ready = tts::wait_ready(&state.http, ready, || state.tts.lock().unwrap().child.as_mut().and_then(exited)).await;
     match ready {
-        Ok(()) => {
+        Ok(port) => {
             state.tts.lock().unwrap().port = Some(port);
             Ok(())
         }
@@ -1000,10 +1006,18 @@ fn stt_status(app: AppHandle, state: State<'_, AppState>) -> Res<SttStatus> {
 async fn stt_remove_model(app: AppHandle, state: State<'_, AppState>, lang: String) -> Res<()> {
     let name = stt::model_name(&lang)?;
     let root = stt_dir(&app)?;
-    if state.stt.lock().unwrap().as_ref().is_some_and(|l| l.uses(&root.join(name))) {
+    // Held to the end, so a speech input start cannot load the model while it is being deleted.
+    let _life = state.stt_life.lock().await;
+    refuse_if_listening(&state, &root.join(name))?;
+    tauri::async_runtime::spawn_blocking(move || stt::remove_model(&root, name)).await.map_err(|e| e.to_string())?
+}
+
+/// Refuses while speech input is listening with the model in `dir`; call it holding `stt_life`.
+fn refuse_if_listening(state: &AppState, dir: &Path) -> Res<()> {
+    if state.stt.lock().unwrap().as_ref().is_some_and(|l| l.uses(dir)) {
         return Err("Speech input is listening with this model; stop the microphone in the chat first".into());
     }
-    tauri::async_runtime::spawn_blocking(move || stt::remove_model(&root, name)).await.map_err(|e| e.to_string())?
+    Ok(())
 }
 
 /// Downloads (resumable) and unpacks the Vosk model for `lang` into `stt/<model>` of the app data dir.
@@ -1015,13 +1029,18 @@ async fn stt_download(app: AppHandle, state: State<'_, AppState>, id: String, la
     let url = reqwest::Url::parse(&stt::model_url(name)).map_err(|e| e.to_string())?;
     {
         let op = state.op(&id);
-        if download::download(&state.http, url, &zip, Some(stt::MAX_ZIP_BYTES), &op.notify, |p| send(&on_progress, p)).await? {
+        if download::download(&state.http, url, &zip, Some(stt::MAX_ZIP_BYTES), Some(stt::model_sha256(name)), &op.notify, |p| send(&on_progress, p)).await? {
             return Ok(true);
         }
     }
     send(&on_progress, Progress { message: "Unpacking".into(), completed: None, total: None });
+    // Only the install replaces the live model folder; the download itself must not block speech input start/stop.
+    let _life = state.stt_life.lock().await;
     let z = zip.clone();
-    let r = tauri::async_runtime::spawn_blocking(move || stt::install_model(&z, &root, name)).await.map_err(|e| e.to_string())?;
+    let r = match refuse_if_listening(&state, &root.join(name)) {
+        Ok(()) => tauri::async_runtime::spawn_blocking(move || stt::install_model(&z, &root, name)).await.map_err(|e| e.to_string())?,
+        Err(e) => Err(e),
+    };
     let _ = std::fs::remove_file(&zip);
     r.map(|_| false)
 }
@@ -1055,7 +1074,6 @@ async fn stt_start(
     if !stt::installed(&dir) {
         return Err("The speech input model for this language is not installed; download it on the Speech page".into());
     }
-    let old = state.stt.lock().unwrap().take();
     let opts = stt::Options {
         model_dir: dir,
         idle: Duration::from_secs(u64::from(idle_secs.clamp(1, 60))),
@@ -1064,16 +1082,43 @@ async fn stt_start(
         muted: state.stt_muted.clone(),
     };
     let a = app.clone();
-    let (l, hint) = tauri::async_runtime::spawn_blocking(move || {
+    start_listener(&state.stt_life, &state.stt, stt::Listener::stop, move || stt::start(a, opts)).await
+}
+
+/// Stops the listener in `slot`, runs the blocking `start` and stores the new listener. `life` is held for the whole
+/// call, so a stop arriving during a slow start waits and then stops the new listener instead of finding none.
+async fn start_listener<L: Send + 'static, T: Send + 'static>(
+    life: &tokio::sync::Mutex<()>,
+    slot: &Mutex<Option<L>>,
+    stop: fn(L),
+    start: impl FnOnce() -> Res<(L, T)> + Send + 'static,
+) -> Res<T> {
+    let _life = life.lock().await;
+    let old = slot.lock().unwrap().take();
+    let (l, t) = tauri::async_runtime::spawn_blocking(move || {
         if let Some(o) = old {
-            o.stop();
+            stop(o);
         }
-        stt::start(a, opts)
+        start()
     })
     .await
     .map_err(|e| e.to_string())??;
-    *state.stt.lock().unwrap() = Some(l);
-    Ok(hint)
+    // Never drop a listener without stopping it: it would keep listening invisibly.
+    let prev = slot.lock().unwrap().replace(l);
+    if let Some(p) = prev {
+        tauri::async_runtime::spawn_blocking(move || stop(p)).await.map_err(|e| e.to_string())?;
+    }
+    Ok(t)
+}
+
+/// Stops and removes the listener in `slot`, if any (waits for a start in progress, see `start_listener`).
+async fn stop_listener<L: Send + 'static>(life: &tokio::sync::Mutex<()>, slot: &Mutex<Option<L>>, stop: fn(L)) -> Res<()> {
+    let _life = life.lock().await;
+    let l = slot.lock().unwrap().take();
+    if let Some(l) = l {
+        tauri::async_runtime::spawn_blocking(move || stop(l)).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// While muted, speech input ignores the microphone (set while a reply is read aloud).
@@ -1084,11 +1129,7 @@ fn stt_mute(state: State<'_, AppState>, muted: bool) {
 
 #[tauri::command]
 async fn stt_stop(state: State<'_, AppState>) -> Res<()> {
-    let l = state.stt.lock().unwrap().take();
-    if let Some(l) = l {
-        tauri::async_runtime::spawn_blocking(move || l.stop()).await.map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    stop_listener(&state.stt_life, &state.stt, stt::Listener::stop).await
 }
 
 // ---------- smart select (mask editor) ----------
@@ -1204,6 +1245,7 @@ pub fn run() {
             model_caps: Mutex::default(),
             job: KillJob::new(),
             stt: Mutex::new(None),
+            stt_life: tokio::sync::Mutex::new(()),
             stt_muted: Arc::default(),
             sam: Arc::default(),
         })
@@ -1295,4 +1337,96 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::future::Future;
+    use std::pin::{pin, Pin};
+
+    struct Fake(Arc<AtomicBool>);
+
+    fn stop_fake(f: Fake) {
+        f.0.store(true, Ordering::SeqCst);
+    }
+
+    type FakeStart = Box<dyn FnOnce() -> Res<(Fake, ())> + Send>;
+
+    /// A start (like loading Vosk) that reports when it runs, then blocks until released.
+    fn gated_start(stopped: &Arc<AtomicBool>) -> (FakeStart, tokio::sync::oneshot::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let s = stopped.clone();
+        let start: FakeStart = Box::new(move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+            Ok((Fake(s), ()))
+        });
+        (start, started_rx, release_tx)
+    }
+
+    /// Polls `f` once: Some(output) if it finished, None if it is waiting (e.g. for the lock).
+    async fn poll_once<F: Future>(f: Pin<&mut F>) -> Option<F::Output> {
+        tokio::select! {
+            biased;
+            r = f => Some(r),
+            () = std::future::ready(()) => None,
+        }
+    }
+
+    #[test]
+    fn stt_stop_during_slow_start_stops_the_new_listener() {
+        let (life, slot) = (tokio::sync::Mutex::new(()), Mutex::new(None));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let (start, started, release) = gated_start(&stopped);
+        tauri::async_runtime::block_on(async {
+            // The stop is issued only once the start is running, and the start finishes only after that.
+            let stopping = async {
+                started.await.unwrap();
+                let mut stop = pin!(stop_listener(&life, &slot, stop_fake));
+                let done = poll_once(stop.as_mut()).await;
+                release.send(()).unwrap();
+                match done {
+                    Some(r) => r,
+                    None => stop.await,
+                }
+            };
+            let (a, b) = tokio::join!(start_listener(&life, &slot, stop_fake, start), stopping);
+            a.unwrap();
+            b.unwrap();
+        });
+        assert!(slot.lock().unwrap().is_none(), "a listener survived stt_stop");
+        assert!(stopped.load(Ordering::SeqCst), "the new listener was never stopped");
+    }
+
+    #[test]
+    fn overlapping_stt_starts_stop_the_first_listener() {
+        let (life, slot) = (tokio::sync::Mutex::new(()), Mutex::new(None));
+        let (first, second) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let (start, started, release) = gated_start(&first);
+        let s2 = second.clone();
+        tauri::async_runtime::block_on(async {
+            // The second start is issued only once the first is running.
+            let overlapping = async {
+                started.await.unwrap();
+                let mut start2 = pin!(start_listener(&life, &slot, stop_fake, move || Ok((Fake(s2), ()))));
+                let done = poll_once(start2.as_mut()).await;
+                release.send(()).unwrap();
+                match done {
+                    Some(r) => r,
+                    None => start2.await,
+                }
+            };
+            let (a, b) = tokio::join!(start_listener(&life, &slot, stop_fake, start), overlapping);
+            a.unwrap();
+            b.unwrap();
+        });
+        // Exactly one listener is stopped and the slot holds the other: none is orphaned.
+        let (f, s) = (first.load(Ordering::SeqCst), second.load(Ordering::SeqCst));
+        assert!(f != s, "first stopped: {f}, second stopped: {s}");
+        assert!(slot.lock().unwrap().as_ref().is_some_and(|l| !l.0.load(Ordering::SeqCst)));
+        // With the lock the second start runs after the first stored its listener, so it is the first that stops.
+        assert!(f, "the second start did not wait for the first");
+    }
 }

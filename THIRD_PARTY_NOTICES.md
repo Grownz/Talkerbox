@@ -15,7 +15,7 @@ against a primary source.
 
 | Component | Version / file | Licence | Copyright holder or URL | Bundled / downloaded |
 |---|---|---|---|---|
-| Rust crates (Tauri, reqwest, tokio, serde, image, cpal and their dependencies) | per `app/src-tauri/Cargo.lock`, compiled into `talkerbox.exe` | almost all `MIT OR Apache-2.0`, `MIT` or `Apache-2.0`; a few `Unicode-3.0` (ICU4X), `Unlicense OR MIT`, `BSD-3-Clause` (brotli, alloc-stdlib), `Zlib`, `ISC` (libloading) | each crate's authors, see crates.io; Tauri: The Tauri Programme in the Commons Conservancy | bundled |
+| Rust crates (Tauri, reqwest, tokio, serde, cpal and their dependencies) | per `app/src-tauri/Cargo.lock`, compiled into `talkerbox.exe` | almost all `MIT OR Apache-2.0`, `MIT` or `Apache-2.0`; a few `Unicode-3.0` (ICU4X), `Unlicense OR MIT`, `BSD-3-Clause` (brotli, alloc-stdlib), `Zlib`, `ISC` (libloading) | each crate's authors, see crates.io; Tauri: The Tauri Programme in the Commons Conservancy | bundled |
 | cssparser, cssparser-macros, selectors, dtoa-short, option-ext | cssparser 0.37.0 / 0.38.0, cssparser-macros 0.7.1, selectors 0.38.0 / 0.41.0, dtoa-short 0.3.5, option-ext 0.2.0 | MPL-2.0 (file-level copyleft, see section 6.5) | https://github.com/servo/rust-cssparser, https://github.com/servo/stylo, https://github.com/upsuper/dtoa-short, https://github.com/soc/option-ext | bundled |
 | Svelte runtime | 5.57.3 | MIT | Copyright (c) 2016-2025 Svelte Contributors | bundled (in the frontend) |
 | @tauri-apps/api, @tauri-apps/plugin-dialog | 2.12.4, 2.8.4 | Apache-2.0 OR MIT | Copyright (c) 2017 - Present Tauri Apps Contributors; The Tauri Programme in the Commons Conservancy | bundled (in the frontend) |
@@ -56,18 +56,12 @@ HTTP on `127.0.0.1`. It contains:
 | Python runtime | CPython used for the build (3.10.11 for the current build) | PSF-2.0 (full history: https://docs.python.org/3/license.html) | Copyright (c) 2001 Python Software Foundation | bundled |
 | PyInstaller bootloader | PyInstaller 6.22.3 | GPL-2.0-or-later with the PyInstaller bootloader exception (allows distributing the built program under any licence) | Copyright (c) 2010-2023, PyInstaller Development Team; https://github.com/pyinstaller/pyinstaller | bundled |
 | joblib | 1.6.0 | BSD-3-Clause | Copyright (c) 2008-2021, The joblib developers | bundled |
-| attrs | 26.1.0 | MIT | Copyright (c) 2015 Hynek Schlawack and the attrs contributors | bundled |
 | typing_extensions | 4.16.0 | PSF-2.0 | Python Software Foundation | bundled |
 | dlinfo | 2.0.0 | MIT | Copyright 2019 Catalysts GmbH, a Cloudflight Company | bundled |
-| flatbuffers | 25.12.19 | Apache-2.0 | https://github.com/google/flatbuffers (no copyright line in the package) | bundled |
-| protobuf | 7.36.2 | BSD-3-Clause | Copyright 2008 Google Inc. | bundled |
-| coloredlogs | 15.0.1 | MIT | Copyright (c) 2020 Peter Odding | bundled |
-| humanfriendly | 10.0 | MIT | Copyright (c) 2021 Peter Odding | bundled |
 | cloudpickle | 3.1.2 | BSD-3-Clause | Copyright (c) 2015, Cloudpickle contributors; Copyright (c) 2012, Regents of the University of California | bundled |
-| packaging | 26.3 | Apache-2.0 OR BSD-2-Clause | Copyright (c) Donald Stufft and individual contributors | bundled |
 | Microsoft Visual C++ runtime | `msvcp140.dll` and related DLLs shipped inside the Python and NumPy packages | Microsoft Visual Studio licence terms (redistributable code) | Microsoft Corporation | bundled |
 
-The Python package list reflects the build environment (`tts-sidecar\.venv`); development-only packages (pytest,
+The Python package list reflects what the PyInstaller build bundles; development-only packages (pytest,
 pip, setuptools, sympy and the PyInstaller build tool itself) are excluded from the executable by
 `tts-sidecar\build.ps1`. Not every listed package is necessarily imported at runtime; *not verified* per package.
 

@@ -41,6 +41,15 @@ pub fn model_url(name: &str) -> String {
     format!("https://alphacephei.com/vosk/models/{name}.zip")
 }
 
+/// SHA-256 of each model zip, hashed from the alphacephei.com downloads (46 499 967 / 41 205 931 bytes).
+pub fn model_sha256(name: &str) -> &'static str {
+    match name {
+        "vosk-model-small-de-0.15" => "b7e53c90b1f0a38456f4cd62b366ecd58803cd97cd42b06438e2c131713d5e43",
+        "vosk-model-small-en-us-0.15" => "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498",
+        _ => "", // matches no download, so a model without a pin can never install
+    }
+}
+
 pub fn installed(dir: &Path) -> bool {
     dir.join("am").join("final.mdl").is_file()
 }
@@ -439,6 +448,14 @@ fn build<T: cpal::SizedSample + Send + 'static>(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn every_model_has_a_pinned_hash() {
+        for (_, name) in MODELS {
+            assert_eq!(model_sha256(name).len(), 64, "{name}");
+        }
+        assert_eq!(model_sha256("other"), "");
+    }
 
     #[test]
     fn resample_48k_stereo_to_16k_mono() {

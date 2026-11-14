@@ -103,7 +103,8 @@ export class Speaker {
           if (gen !== this.gen) break
           this.play(buf)
         } catch (e) {
-          this.onError(`Speech failed: ${errText(e)}`)
+          // A sentence cancelled by stop() (e.g. speech switched off) failing is no error worth reporting.
+          if (gen === this.gen) this.onError(`Speech failed: ${errText(e)}`)
         }
       }
     } finally {

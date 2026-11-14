@@ -21,6 +21,40 @@ pub fn safe_file_name(url: &str) -> Result<(reqwest::Url, String), String> {
     Ok((u, name))
 }
 
+/// `safe_file_name` for GGUF imports: the stored file name must end in `.gguf`, so nothing else (e.g. an .exe) lands on disk.
+pub fn gguf_file_name(url: &str) -> Result<(reqwest::Url, String), String> {
+    let (u, name) = safe_file_name(url)?;
+    if !crate::tts::has_ext(&name, &["gguf"]) {
+        return Err("The link must point to a .gguf file".into());
+    }
+    Ok((u, name))
+}
+
+/// Deletes every folder in `root` except `keep` (leftovers of aborted downloads).
+pub fn remove_other_dirs(root: &Path, keep: &Path) {
+    for e in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p != keep && e.file_type().is_ok_and(|t| t.is_dir()) {
+            let _ = std::fs::remove_dir_all(&p);
+        }
+    }
+}
+
+/// Moves a finished partial file to `dest`, after checking its SHA-256 when one is pinned. A mismatch deletes the
+/// partial file, so a corrupt or tampered download never becomes the final file and the next try starts over.
+async fn finish(part: &Path, dest: &Path, sha256: Option<&str>) -> Result<(), String> {
+    if let Some(want) = sha256 {
+        let p = part.to_path_buf();
+        let got = tauri::async_runtime::spawn_blocking(move || crate::sam::sha256_file(&p)).await.map_err(|e| e.to_string())??;
+        if got != want {
+            let _ = tokio::fs::remove_file(part).await;
+            let name = dest.file_name().unwrap_or_default().to_string_lossy();
+            return Err(format!("{name}: checksum mismatch; the download was deleted, retry to download it again"));
+        }
+    }
+    tokio::fs::rename(part, dest).await.map_err(|e| format!("{}: {e}", dest.display()))
+}
+
 /// First 16 hex chars of the SHA-256 of a URL: identifies downloads so different files never share a partial.
 pub fn url_hash(url: &str) -> String {
     use sha2::Digest;
@@ -35,12 +69,14 @@ pub fn part_path(dest: &Path, url: &str) -> PathBuf {
 }
 
 /// Downloads `url` to `dest`, resuming from its partial file (see `part_path`) if present. Returns Ok(true)
-/// if cancelled (the partial file is kept so the next attempt resumes).
+/// if cancelled (the partial file is kept so the next attempt resumes). With `sha256`, `dest` only ever appears
+/// with that hash (see `finish`).
 pub async fn download(
     http: &reqwest::Client,
     url: reqwest::Url,
     dest: &Path,
     max_bytes: Option<u64>,
+    sha256: Option<&str>,
     cancel: &Notify,
     on: impl Fn(Progress),
 ) -> Result<bool, String> {
@@ -53,20 +89,51 @@ pub async fn download(
     let part = part_path(dest, url.as_str());
     let mut have = tokio::fs::metadata(&part).await.map(|m| m.len()).unwrap_or(0);
 
-    let mut req = http.get(url);
-    if have > 0 {
-        req = req.header(reqwest::header::RANGE, format!("bytes={have}-"));
-    }
-    let mut resp = tokio::select! {
-        _ = cancel.notified() => return Ok(true),
-        r = req.send() => r.map_err(net_err)?,
+    // At most two requests: a Range request, then (after a 416) one without Range.
+    let mut ranged = have > 0;
+    let mut resp = loop {
+        let mut req = http.get(url.clone());
+        if ranged {
+            req = req.header(reqwest::header::RANGE, format!("bytes={have}-"));
+        }
+        let resp = tokio::select! {
+            _ = cancel.notified() => return Ok(true),
+            r = req.send() => r.map_err(net_err)?,
+        };
+        if !ranged {
+            // Retry after a 416 without a usable Content-Range: the same length means the part is complete.
+            if have > 0 && resp.status() == reqwest::StatusCode::OK && resp.content_length() == Some(have) {
+                drop(resp);
+                finish(&part, dest, sha256).await?;
+                return Ok(false);
+            }
+            break resp;
+        }
+        if resp.status() != reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+            break resp;
+        }
+        ranged = false;
+        let total = resp
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("bytes */"))
+            .and_then(|n| n.parse::<u64>().ok());
+        match total {
+            Some(n) if n == have => {
+                // The part file already holds the whole resource.
+                finish(&part, dest, sha256).await?;
+                return Ok(false);
+            }
+            Some(_) => {
+                // The resource changed upstream: drop the stale part and start over.
+                tokio::fs::remove_file(&part).await.map_err(|e| io(&part, e))?;
+                have = 0;
+            }
+            None => {} // Unknown size: ask for the whole file and compare its length.
+        }
     };
     let status = resp.status();
-    if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && have > 0 {
-        // The part file already holds the whole resource.
-        tokio::fs::rename(&part, dest).await.map_err(|e| io(dest, e))?;
-        return Ok(false);
-    }
     if !status.is_success() {
         return Err(format!("Download failed: HTTP {status}"));
     }
@@ -116,7 +183,7 @@ pub async fn download(
         }
     }
     on(Progress { message: "Downloaded".into(), completed: Some(have), total });
-    tokio::fs::rename(&part, dest).await.map_err(|e| io(dest, e))?;
+    finish(&part, dest, sha256).await?;
     Ok(false)
 }
 
@@ -141,6 +208,10 @@ mod tests {
         max: Option<u64>,
         cancel_first: bool,
     ) -> Outcome {
+        run_sha(name, base, part, max, None, cancel_first)
+    }
+
+    fn run_sha(name: &str, base: &str, part: Option<&[u8]>, max: Option<u64>, sha: Option<&str>, cancel_first: bool) -> Outcome {
         let dir = std::env::temp_dir().join(format!("talkerbox-dl-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -155,7 +226,7 @@ mod tests {
             cancel.notify_one();
         }
         let http = reqwest::Client::new();
-        let r = tauri::async_runtime::block_on(download(&http, reqwest::Url::parse(&url).unwrap(), &dest, max, &cancel, |_| {}));
+        let r = tauri::async_runtime::block_on(download(&http, reqwest::Url::parse(&url).unwrap(), &dest, max, sha, &cancel, |_| {}));
         let out = (r, std::fs::read(&dest).ok(), std::fs::read(&part_file).ok());
         let _ = std::fs::remove_dir_all(&dir);
         out
@@ -192,12 +263,64 @@ mod tests {
         assert_eq!(dest, Some(body()));
     }
 
+    fn not_satisfiable(total: usize) -> Vec<u8> {
+        format!("HTTP/1.1 416 Range Not Satisfiable\r\nConnection: close\r\nContent-Range: bytes */{total}\r\nContent-Length: 0\r\n\r\n").into_bytes()
+    }
+
     #[test]
     fn range_not_satisfiable_means_complete() {
-        let base = serve(1, |_| response("416 Range Not Satisfiable", Some(0), b""));
+        let base = serve(1, |_| not_satisfiable(1000));
         let (r, dest, part) = run("416", &base, Some(&body()), None, false);
         assert_eq!(r, Ok(false));
         assert_eq!(dest, Some(body()));
+        assert_eq!(part, None);
+    }
+
+    #[test]
+    fn range_not_satisfiable_with_other_size_restarts() {
+        // Upstream file was replaced by a smaller one: the longer stale partial must not become the final file.
+        let fresh = body()[..300].to_vec();
+        let base = serve(2, move |req| {
+            if req.contains("range:") {
+                not_satisfiable(300)
+            } else {
+                response("200 OK", Some(300), &body()[..300])
+            }
+        });
+        let (r, dest, part) = run("416-stale", &base, Some(&[0xAA; 1000]), None, false);
+        assert_eq!(r, Ok(false));
+        assert_eq!(dest, Some(fresh));
+        assert_eq!(part, None);
+    }
+
+    #[test]
+    fn range_not_satisfiable_without_header_and_same_length_keeps_part() {
+        // The full response has the part's length: the part is complete, and its body (0xBB) is never written.
+        let base = serve(2, |req| {
+            if req.contains("range:") {
+                response("416 Range Not Satisfiable", Some(0), b"")
+            } else {
+                response("200 OK", Some(1000), &[0xBB; 1000])
+            }
+        });
+        let (r, dest, part) = run("416-nohdr-same", &base, Some(&body()), None, false);
+        assert_eq!(r, Ok(false));
+        assert_eq!(dest, Some(body()));
+        assert_eq!(part, None);
+    }
+
+    #[test]
+    fn range_not_satisfiable_without_header_and_other_length_downloads_fresh() {
+        let base = serve(2, |req| {
+            if req.contains("range:") {
+                response("416 Range Not Satisfiable", Some(0), b"")
+            } else {
+                response("200 OK", Some(300), &body()[..300])
+            }
+        });
+        let (r, dest, part) = run("416-nohdr-other", &base, Some(&[0xAA; 1000]), None, false);
+        assert_eq!(r, Ok(false));
+        assert_eq!(dest, Some(body()[..300].to_vec()));
         assert_eq!(part, None);
     }
 
@@ -222,6 +345,49 @@ mod tests {
         assert!(r.is_err());
         assert_eq!(dest, None);
         assert!(part.is_some_and(|p| p.len() <= 500), "partial file must stay for resume");
+    }
+
+    #[test]
+    fn checksum_is_checked_before_the_file_appears() {
+        let sha = format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(body()));
+        let base = serve(1, |_| response("200 OK", Some(1000), &body()));
+        assert_eq!(run_sha("sha-ok", &base, None, None, Some(&sha), false), (Ok(false), Some(body()), None));
+        // Wrong bytes: neither the final file nor the partial file stays.
+        let base = serve(1, |_| response("200 OK", Some(1000), &[0xAA; 1000]));
+        let (r, dest, part) = run_sha("sha-bad", &base, None, None, Some(&sha), false);
+        assert!(r.unwrap_err().contains("checksum"));
+        assert_eq!((dest, part), (None, None));
+        // A complete but corrupt partial file (416 path) is caught too.
+        let base = serve(1, |_| not_satisfiable(1000));
+        let (r, dest, part) = run_sha("sha-416", &base, Some(&[0xAA; 1000]), None, Some(&sha), false);
+        assert!(r.unwrap_err().contains("checksum"));
+        assert_eq!((dest, part), (None, None));
+    }
+
+    #[test]
+    fn gguf_names_only() {
+        let ok = |u: &str| gguf_file_name(u).map(|(_, n)| n);
+        assert_eq!(ok("https://h/a/Model-Q4.GGUF?download=1").as_deref(), Ok("Model-Q4.GGUF"));
+        assert!(ok("https://h/a/ollama.exe").is_err());
+        assert!(ok("https://h/a/ollama.exe?x=.gguf").is_err());
+        assert!(ok("https://h/a/x.gguf%00.exe").is_err());
+        assert!(ok("https://h/a/.gguf").is_err());
+    }
+
+    #[test]
+    fn other_dirs_are_removed() {
+        let root = std::env::temp_dir().join(format!("talkerbox-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for d in ["keep", "old1", "old2"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+            std::fs::write(root.join(d).join("x.part"), b"x").unwrap();
+        }
+        std::fs::write(root.join("file.txt"), b"x").unwrap();
+        remove_other_dirs(&root, &root.join("keep"));
+        let mut left: Vec<String> = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["file.txt", "keep"]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

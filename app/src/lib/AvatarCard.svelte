@@ -47,17 +47,23 @@
   }
 
   // shortcut: thumbnails decode the full image (max 20 MB each); store a small preview if lists get long.
+  let refreshing = 0
   async function refresh() {
+    const token = ++refreshing
+    const old = thumbs
+    const next: Record<string, string> = {}
     try {
-      characters = await api.avatarList()
-      const old = thumbs
-      const next: Record<string, string> = {}
-      for (const c of characters) next[c.id] = old[c.id] ?? URL.createObjectURL(await api.avatarImage(c))
+      const list = await api.avatarList()
+      if (token === refreshing) characters = list
+      for (const c of list) next[c.id] = old[c.id] ?? URL.createObjectURL(await api.avatarImage(c))
+      if (token !== refreshing) throw null // a newer refresh (or unmount) owns the thumbnails
       for (const [id, url] of Object.entries(old)) if (!next[id]) URL.revokeObjectURL(url)
       thumbs = next
       if (settings.avatarActive && !characters.some((c) => c.id === settings.avatarActive)) settings.avatarActive = null
     } catch (e) {
-      onError(`Loading characters failed: ${errText(e)}`)
+      // Free the thumbnails this call made (each up to 20 MB); the ones it reused stay with `old`.
+      for (const [id, url] of Object.entries(next)) if (old[id] !== url) URL.revokeObjectURL(url)
+      if (e !== null) onError(`Loading characters failed: ${errText(e)}`)
     }
   }
 
@@ -88,7 +94,10 @@
   onMount(() => {
     void refresh()
     void samRefresh()
-    return () => Object.values(thumbs).forEach((u) => URL.revokeObjectURL(u))
+    return () => {
+      refreshing++
+      Object.values(thumbs).forEach((u) => URL.revokeObjectURL(u))
+    }
   })
 
   async function importImage() {

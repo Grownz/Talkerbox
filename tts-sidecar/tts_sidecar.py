@@ -1,7 +1,8 @@
 """Talkerbox local TTS sidecar: a tiny HTTP server around kokoro-onnx.
 
 Usage: tts-sidecar --port <int> --model <kokoro-v1.0.onnx> --voices <voices-v1.0.bin> [--voices-dir <dir>] [--packs-dir <dir>]
-Binds 127.0.0.1 only. Prints "READY port=<port>" once serving and exits when stdin closes.
+Binds 127.0.0.1 only, exclusively (--port 0 picks a free port). Prints "READY port=<port>" once serving and exits
+when stdin closes.
 """
 
 import argparse
@@ -12,6 +13,7 @@ import math
 import os
 import pickle
 import re
+import socket
 import sys
 import threading
 import wave
@@ -88,6 +90,8 @@ def read_pt(path):
         if z.getinfo(pkl[0]).file_size > 64 * 1024:
             raise ValueError("data.pkl too large")
         names = set(z.namelist())
+        if prefix + "byteorder" in names and z.getinfo(prefix + "byteorder").file_size > 16:
+            raise ValueError("byteorder entry too large")
         if prefix + "byteorder" in names and z.read(prefix + "byteorder").strip() != b"little":
             raise ValueError("only little-endian tensors are supported")
         t = _SafePtUnpickler(io.BytesIO(z.read(pkl[0]))).load()
@@ -271,27 +275,44 @@ def make_handler(kokoro, voices, packs, voices_path):
     """voices: {id: Voice}; packs: {pack id: pack dict}; pack models load on first use."""
     lock = threading.Lock()  # one inference (and pack model load) at a time; onnxruntime already uses all cores
     models = {}
+    failed = {}  # pack id -> (model file signature, error): a broken model is not reloaded on every sentence
     voice_list = sorted(voices)
     details = [{"id": vid, "pack": voices[vid].pack, "language": voices[vid].language,
                 "fallback": voices[vid].fallback} for vid in voice_list]
+
+    def signature(path):
+        try:
+            st = os.stat(path)
+            return st.st_size, st.st_mtime_ns
+        except OSError:
+            return None
 
     def model_for(pack_id):  # call with lock held
         if pack_id is None:
             return kokoro
         if pack_id not in models:
             from kokoro_onnx import Kokoro
+            pack = packs[pack_id]
+            sig = signature(pack["model"])
+            if pack_id in failed and failed[pack_id][0] == sig:  # retried once the file changes or on restart
+                raise RuntimeError(f"pack model {pack_id} failed to load earlier: {failed[pack_id][1]}")
             for old in list(models):  # keep at most base + one pack model in memory (~330 MB each)
                 sys.stderr.write(f"info: unloading pack model {old}\n")
                 del models[old]
-            pack = packs[pack_id]
             sys.stderr.write(f"info: loading pack model {pack_id}\n")
-            # Kokoro() insists on a voices file; the base one is fine because pack voices are passed as arrays.
-            models[pack_id] = Kokoro(str(pack["model"]), voices_path,
-                                     vocab_config=str(pack["vocab"]) if pack["vocab"] else None)
+            try:
+                # Kokoro() insists on a voices file; the base one is fine because pack voices are passed as arrays.
+                models[pack_id] = Kokoro(str(pack["model"]), voices_path,
+                                         vocab_config=str(pack["vocab"]) if pack["vocab"] else None)
+            except Exception as e:
+                failed[pack_id] = (sig, e)
+                raise
+            failed.pop(pack_id, None)
         return models[pack_id]
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "tts-sidecar"
+        timeout = 30  # seconds per socket read/write: a stalled client cannot hold a handler thread forever
 
         def log_message(self, fmt, *args):  # keep stdout clean for the parent; log to stderr
             sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
@@ -360,6 +381,17 @@ def make_handler(kokoro, voices, packs, voices_path):
     return Handler
 
 
+class Server(ThreadingHTTPServer):
+    """Binds the port exclusively, so no other local process can bind it too and receive our requests."""
+    allow_reuse_address = False
+    daemon_threads = True
+
+    def server_bind(self):
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):  # Windows
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def main():
     p = argparse.ArgumentParser(description="Talkerbox local TTS sidecar (kokoro-onnx)")
     p.add_argument("--port", type=int, required=True)
@@ -403,10 +435,9 @@ def main():
 
     try:
         handler = make_handler(kokoro, voices, {pk["id"]: pk for pk in packs}, a.voices)
-        httpd = ThreadingHTTPServer(("127.0.0.1", a.port), handler)
+        httpd = Server(("127.0.0.1", a.port), handler)
     except OSError as e:
         sys.exit(f"error: cannot bind 127.0.0.1:{a.port}: {e}")
-    httpd.daemon_threads = True
 
     def watch_stdin():
         # The parent closes our stdin (or dies) -> EOF -> shut down.
