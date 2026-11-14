@@ -39,6 +39,8 @@ pub struct Settings {
     pub avatar_active: Option<String>,
     /// The avatar is shown in the main window's sidebar instead of its own window (restored at start).
     pub avatar_docked: bool,
+    /// The avatar window stays above other windows (its pin button); owned by the backend.
+    pub avatar_on_top: bool,
 }
 
 impl Default for Settings {
@@ -61,6 +63,7 @@ impl Default for Settings {
             avatar_bounds: None,
             avatar_active: None,
             avatar_docked: false,
+            avatar_on_top: false,
         }
     }
 }
@@ -125,6 +128,7 @@ fn from_ui(s: &mut Settings, ui: Settings) {
         tts_model_dir: s.tts_model_dir.take(),
         display_names: std::mem::take(&mut s.display_names),
         avatar_bounds: s.avatar_bounds.take(),
+        avatar_on_top: s.avatar_on_top,
         ..ui
     }
 }
@@ -251,6 +255,7 @@ mod tests {
             s.tts_model_dir = Some("D:/tts".into());
             s.display_names.insert("m".into(), "Name".into());
             s.avatar_bounds = Some([1.0, 2.0, 3.0, 4.0]);
+            s.avatar_on_top = true;
             s.last_model = Some("old".into());
         })
         .unwrap();
@@ -261,6 +266,7 @@ mod tests {
         assert_eq!(s.tts_model_dir.as_deref(), Some("D:/tts"));
         assert_eq!(s.display_names.get("m").map(String::as_str), Some("Name"));
         assert_eq!(s.avatar_bounds, Some([1.0, 2.0, 3.0, 4.0]));
+        assert!(s.avatar_on_top);
         assert_eq!((s.last_model.as_deref(), s.stt_idle_secs), (Some("new"), 9));
         let _ = std::fs::remove_dir_all(&d);
     }

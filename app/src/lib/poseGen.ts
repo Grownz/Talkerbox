@@ -2,14 +2,29 @@
 // Pure apart from the injected clock values and RNG, so it is unit-tested (tests/poseGen.test.ts).
 import { REST, type Pose } from './rigRender.ts'
 
-export const BLINK_MS = 150
-export const BLINK_GAP_MIN = 2000
-export const BLINK_GAP_MAX = 6000
+// Blinks: lids drop fast and lift more slowly (human blinks close in ~60-80 ms and open in ~100-200 ms).
+export const BLINK_CLOSE_MS = 65
+export const BLINK_OPEN_MS = 125
+export const BLINK_MS = BLINK_CLOSE_MS + BLINK_OPEN_MS
+// Gap after a blink: lognormal, median 3.5 s, sigma 0.33, so ~90 % fall within 2-6 s with an occasional long stare;
+// clamped so no two blinks crowd each other and no stare lasts forever.
+export const BLINK_GAP_MEDIAN = 3500
+export const BLINK_GAP_SIGMA = 0.33
+export const BLINK_GAP_MIN = 1500
+export const BLINK_GAP_MAX = 9000
+/** Share of blinks followed by a second one, which starts DOUBLE_GAP_MIN..MAX ms after the first has reopened. */
+export const DOUBLE_P = 0.1
+export const DOUBLE_GAP_MIN = 150
+export const DOUBLE_GAP_MAX = 250
+/** A finished sentence blinks, unless a blink started less than this long ago (no blink storm on short sentences). */
+export const BLINK_MIN_SPACING = 1000
 /** Largest gesture swing at full speech energy, in degrees (arms; legs only shift the weight a little). */
 export const ARM_SWING = 22
 export const ARM_LIFT = 8
 export const LEG_SWING = 3
 export const MAX_ANGLE = 60
+/** Time constant (ms) of the lips shutting for P, B, M: ~94 % shut within one 30 fps frame. */
+export const CLOSE_TAU = 12
 
 /** Small seeded RNG (mulberry32) returning 0..1, for reproducible tests. */
 export function seeded(seed: number): () => number {
@@ -33,7 +48,12 @@ export class PoseGen {
   private mouth = 0
   private wide = 0
   private last: number | null = null
+  /** Start of the current or next blink, the start of the previous one, and whether the next is a double's second. */
   private nextBlink: number
+  private lastBlink = -Infinity
+  private second = false
+  /** Finished-sentence count last seen (null before the first one arrives). */
+  private ended: number | null = null
   // Per limb: two incommensurate sine frequencies (Hz) and phases, so the swing never visibly repeats.
   private osc: { f: [number, number]; p: [number, number] }[]
   private rng: () => number
@@ -48,8 +68,23 @@ export class PoseGen {
     }))
   }
 
+  /** Lognormal gap (Box-Muller from two RNG draws; 1 - u keeps log away from 0). */
   private gap() {
-    return BLINK_GAP_MIN + this.rng() * (BLINK_GAP_MAX - BLINK_GAP_MIN)
+    const z = Math.sqrt(-2 * Math.log(1 - this.rng())) * Math.cos(2 * Math.PI * this.rng())
+    return Math.min(BLINK_GAP_MAX, Math.max(BLINK_GAP_MIN, BLINK_GAP_MEDIAN * Math.exp(BLINK_GAP_SIGMA * z)))
+  }
+
+  /** Schedules the blink after the one that just ended at `t`: sometimes a quick second one, else after a gap. */
+  private afterBlink(t: number) {
+    this.lastBlink = this.nextBlink
+    this.second = !this.second && this.rng() < DOUBLE_P
+    this.nextBlink = t + (this.second ? DOUBLE_GAP_MIN + this.rng() * (DOUBLE_GAP_MAX - DOUBLE_GAP_MIN) : this.gap())
+  }
+
+  /** Eye closure 0..1 at `u` ms into a blink: ease shut over BLINK_CLOSE_MS, ease open over BLINK_OPEN_MS. */
+  static blinkCurve(u: number) {
+    if (!(u > 0) || u >= BLINK_MS) return 0
+    return u < BLINK_CLOSE_MS ? 0.5 - 0.5 * Math.cos((Math.PI * u) / BLINK_CLOSE_MS) : 0.5 + 0.5 * Math.cos((Math.PI * (u - BLINK_CLOSE_MS)) / BLINK_OPEN_MS)
   }
 
   /** Slow noisy oscillator of limb `i` at time `t` (ms), -1..1. */
@@ -63,22 +98,32 @@ export class PoseGen {
    * Pose at time `t` (ms, monotonic) for the current loudness `level` (0..1). `still` (reduced motion) keeps
    * the figure in place: no sway and no gestures, but the mouth and blinking still work.
    */
-  step(t: number, level: number, still = false, shape?: { wide: number; fric: number }): Pose {
+  step(t: number, level: number, still = false, shape?: { wide: number; fric: number; close?: number; ended?: number }): Pose {
     // Long frames (a hidden window) are capped so nothing jumps.
     const dt = this.last === null ? 16 : Math.min(100, Math.max(0, t - this.last))
     this.last = t
     const l = Math.min(1, Math.max(0, level || 0))
     const fric = Math.min(1, Math.max(0, shape?.fric || 0))
-    // Loudness sets how far the mouth opens, the viseme shape how: hiss (F, V, S) brings it towards the teeth.
-    const open = l * (1 - 0.6 * fric)
-    this.mouth = ease(this.mouth, open, dt, open > this.mouth ? 25 : 60)
-    // The shape eases more slowly than the opening, so neighbouring sounds blend (coarticulation); silence is neutral.
-    const wide = l > 0.05 ? Math.min(1, Math.max(-1, (shape?.wide || 0) + 0.4 * fric)) : 0
+    const close = Math.min(1, Math.max(0, shape?.close || 0))
+    // Loudness sets how far the mouth opens, the viseme shape how: hiss (F, V, S) brings it towards the teeth, a lip
+    // closure (P, B, M) shuts it. Lips snap shut (a 40 ms closure must read as one), other closing is gentler.
+    const open = l * (1 - 0.6 * fric) * (1 - close)
+    this.mouth = ease(this.mouth, open, dt, open > this.mouth ? 25 : close > 0.5 ? CLOSE_TAU : 60)
+    // The shape eases more slowly than the opening, so neighbouring sounds blend (coarticulation); silence and closed
+    // lips are neutral.
+    const wide = l > 0.05 ? Math.min(1, Math.max(-1, (shape?.wide || 0) + 0.4 * fric)) * (1 - close) : 0
     this.wide = ease(this.wide, wide, dt, 70)
     this.energy = ease(this.energy, l, dt, l > this.energy ? 350 : 900)
-    if (t >= this.nextBlink + BLINK_MS) this.nextBlink = t + this.gap()
-    const blink = t >= this.nextBlink ? Math.sin(((t - this.nextBlink) / BLINK_MS) * Math.PI) : 0
-    const pose: Pose = { ...REST, mouth: this.mouth, wide: this.wide, blink: Math.max(0, blink) }
+    if (t >= this.nextBlink + BLINK_MS) this.afterBlink(t)
+    // A finished sentence blinks now (a count, so frames the docked view skips lose nothing), unless the eyes are
+    // already blinking, a double is pending or a blink started within BLINK_MIN_SPACING.
+    const ended = shape?.ended
+    if (ended !== undefined) {
+      if (this.ended !== null && ended > this.ended && t < this.nextBlink && !this.second && t - this.lastBlink >= BLINK_MIN_SPACING)
+        this.nextBlink = t
+      this.ended = ended
+    }
+    const pose: Pose = { ...REST, mouth: this.mouth, wide: this.wide, blink: PoseGen.blinkCurve(t - this.nextBlink) }
     if (still) return pose
     const e = this.energy
     // Arms swing outward a little with energy (armL is on the image's right, so outward is anticlockwise).

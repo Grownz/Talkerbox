@@ -51,11 +51,62 @@ const smooth = (v: number, a: number, b: number) => {
 }
 const r2 = (v: number) => Math.round(v * 100) / 100
 
+/** Duration window of a lip closure (P, B, M); a quiet stretch outside it is a pause, not a closure. */
+export const CLOSE_MIN_MS = 30
+export const CLOSE_MAX_MS = 120
+/** Closure frames lie this far below the sentence peak in the vowel band (dB); speech on both sides rises this far above them. */
+const CLOSE_GAP_DB = -24
+const CLOSE_JUMP_DB = 12
+/** A closed run whose raw (unfiltered) level stays above this (dB below the raw peak) is a voiced hum (M, B). */
+const MURMUR_DB = -30
+
+const toDb = (xs: number[]) => {
+  const peak = Math.max(0, ...xs)
+  return xs.map((v) => (peak > 0 ? 10 * Math.log10(Math.max(v, 1e-12) / peak) : -120))
+}
+
 /**
- * Mouth shape per `hopMs` frame of a sentence: `wide` -1 (round, OO) .. 0 (neutral, AH) .. 1 (wide, EE) and `fric`
- * 0..1 (teeth/hiss). Quiet frames (below 2 % of the loudest) are neutral. Same length as `envelope()`.
+ * Lip closures (P, B, M) per frame (1 closed, else 0) from the frame energies in the 300 Hz-8 kHz band `e`, the hiss
+ * ratios and the raw frame energies: a run of CLOSE_MIN_MS..CLOSE_MAX_MS far below the vowels in that band, right
+ * after speech, ended by an abrupt onset (within 2 frames), and either
+ * - voiced underneath (the low hum of M, the voice bar of B: raw level above MURMUR_DB), or
+ * - released with a burst: the onset frame is clearly hissier than the sound after it, but not hiss-dominated, and the
+ *   sound after it is no fricative (rules out S/SH after a gap and the strongest T bursts).
+ * A silent gap with a plain vowel onset (a word gap), longer pauses, sentence starts and ends, and smooth dips in
+ * continuous voice never qualify.
+ * shortcut: no reliable place-of-articulation cue, so some T/D/K/G closures also shut the lips briefly; add a burst
+ * spectrum or F2-transition check if that shows. Runs are counted in whole hops (2-6 frames at 20 ms).
  */
-export function visemes(samples: Float32Array, sampleRate: number, hopMs = 20): { wide: number[]; fric: number[] } {
+function closures(e: number[], hiss: number[], raw: number[], hopMs: number): number[] {
+  const n = e.length
+  const out = new Array<number>(n).fill(0)
+  const db = toDb(e)
+  const rawDb = toDb(raw)
+  for (let i = 1; i < n; ) {
+    if (!(db[i] < CLOSE_GAP_DB)) {
+      i++
+      continue
+    }
+    let j = i
+    while (j < n && db[j] < CLOSE_GAP_DB) j++
+    const ms = (j - i) * hopMs
+    const top = Math.max(...db.slice(i, j)) + CLOSE_JUMP_DB
+    const after = Math.min(n - 1, j + 1)
+    const onset = j < n && db[i - 1] > top && Math.max(db[j], db[after]) > top
+    const murmur = rawDb.slice(i, j).every((v) => v > MURMUR_DB)
+    const burst = hiss[j] > hiss[after] + 0.1 && hiss[j] < 0.75 && hiss[after] < 0.5
+    if (ms >= CLOSE_MIN_MS && ms <= CLOSE_MAX_MS && onset && (murmur || burst)) out.fill(1, i, j)
+    i = j
+  }
+  return out
+}
+
+/**
+ * Mouth shape per `hopMs` frame of a sentence: `wide` -1 (round, OO) .. 0 (neutral, AH) .. 1 (wide, EE), `fric`
+ * 0..1 (teeth/hiss) and `close` 1 where the lips shut for P, B, M (see `closures`), else 0. Quiet frames (below 2 %
+ * of the loudest) and closed ones are neutral. Same length as `envelope()`.
+ */
+export function visemes(samples: Float32Array, sampleRate: number, hopMs = 20): { wide: number[]; fric: number[]; close: number[] } {
   const hop = Math.max(1, Math.round((sampleRate * hopMs) / 1000))
   let n = 64
   while (n < hop) n <<= 1
@@ -65,11 +116,14 @@ export function visemes(samples: Float32Array, sampleRate: number, hopMs = 20): 
   const re = new Float64Array(n)
   const im = new Float64Array(n)
   const pw = new Float64Array(n / 2 + 1)
-  const frames: { e: number; wide: number; fric: number }[] = []
+  const frames: { e: number; wide: number; fric: number; hiss: number; raw: number }[] = []
   for (let i = 0; i < samples.length; i += hop) {
+    let raw = 0
     for (let k = 0; k < n; k++) {
+      const x = samples[i + k] ?? 0
+      raw += (x * win[k]) ** 2
       // Pre-emphasis flattens the natural -6 dB/octave tilt of voice, so formants above 1 kHz count.
-      re[k] = ((samples[i + k] ?? 0) - 0.95 * (samples[i + k - 1] ?? 0)) * win[k]
+      re[k] = (x - 0.95 * (samples[i + k - 1] ?? 0)) * win[k]
       im[k] = 0
     }
     fft(re, im)
@@ -98,13 +152,15 @@ export function visemes(samples: Float32Array, sampleRate: number, hopMs = 20): 
     const w = smooth(centroid, 1350, 1750)
     const round = (1 - smooth(f1Hz, 350, 550)) * (1 - w)
     const hiss = hissE / (voiced + hissE || 1)
-    frames.push({ e: voiced + hissE, wide: w - round, fric: smooth(hiss, 0.6, 0.85) })
+    frames.push({ e: voiced + hissE, wide: w - round, fric: smooth(hiss, 0.6, 0.85), hiss, raw })
   }
   const floor = 0.02 * Math.max(0, ...frames.map((f) => f.e))
-  const quiet = (f: { e: number }) => !(f.e > floor) // also true for all-silent input
+  const close = closures(frames.map((f) => f.e), frames.map((f) => f.hiss), frames.map((f) => f.raw), hopMs)
+  const quiet = (f: { e: number }, i: number) => !(f.e > floor) || close[i] > 0 // also true for all-silent input
   return {
-    wide: frames.map((f) => (quiet(f) ? 0 : r2(f.wide))),
-    fric: frames.map((f) => (quiet(f) ? 0 : r2(f.fric))),
+    wide: frames.map((f, i) => (quiet(f, i) ? 0 : r2(f.wide))),
+    fric: frames.map((f, i) => (quiet(f, i) ? 0 : r2(f.fric))),
+    close,
   }
 }
 

@@ -3579,7 +3579,7 @@ dependencies = [
 
 [[package]]
 name = "talkerbox"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "cpal",
  "flate2",

@@ -75,6 +75,29 @@ pub fn puppet_ready(app: AppHandle) -> Result<(), String> {
     app.emit_to("main", "avatar://ready", ()).map_err(|e| e.to_string())
 }
 
+/// The pin button: keeps the avatar window above other windows. Saved, so a recreated or reopened window keeps it.
+#[tauri::command]
+pub fn puppet_set_on_top(app: AppHandle, on: bool) -> Result<(), String> {
+    config::update(&app, |s| s.avatar_on_top = on)?;
+    match app.get_webview_window(LABEL) {
+        Some(w) => w.set_always_on_top(on).map_err(|e| e.to_string()),
+        None => Ok(()),
+    }
+}
+
+/// Whether the pin is set; the avatar page shows its button state from this.
+#[tauri::command]
+pub fn puppet_on_top(app: AppHandle) -> bool {
+    config::load(&app).avatar_on_top
+}
+
+/// The opacity slider in the avatar window title bar: the main window owns the setting (and its menu slider), so
+/// it only gets told; it sends the new options back. A command, so the page needs no permission to emit events.
+#[tauri::command]
+pub fn puppet_set_opacity(app: AppHandle, opacity: u32) -> Result<(), String> {
+    app.emit_to("main", "avatar://opacity", opacity.min(100)).map_err(|e| e.to_string())
+}
+
 fn build(app: &AppHandle, transparent: bool) -> Result<(), String> {
     let mut b = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("puppet.html".into()))
         .title("Talkerbox Avatar")
@@ -84,7 +107,8 @@ fn build(app: &AppHandle, transparent: bool) -> Result<(), String> {
         // the edges resizable; no shadow on a transparent window, it would outline the invisible window.
         .decorations(false)
         .shadow(!transparent)
-        .transparent(transparent);
+        .transparent(transparent)
+        .always_on_top(config::load(app).avatar_on_top);
     if let Some(saved) = config::load(app).avatar_bounds {
         let [x, y, w, h] = clamp_to_monitors(saved, &monitors(app));
         b = b.position(x, y).inner_size(w, h);
@@ -219,6 +243,9 @@ mod tests {
                 "allow-puppet-ready",
                 "allow-puppet-close",
                 "allow-puppet-dock",
+                "allow-puppet-set-on-top",
+                "allow-puppet-on-top",
+                "allow-puppet-set-opacity",
                 "core:window:allow-start-dragging",
                 "core:window:allow-minimize",
                 "core:event:allow-listen",

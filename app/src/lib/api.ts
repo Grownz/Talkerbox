@@ -239,6 +239,11 @@ export const api = {
   /** Avatar window only: its listeners are ready; the backend sends `avatar://ready` to the main window. */
   puppetReady: () => invoke<void>('puppet_ready'),
   puppetDock: () => invoke<void>('puppet_dock'),
+  /** Avatar window pin button: always on top (saved by the backend). */
+  puppetSetOnTop: (on: boolean) => invoke<void>('puppet_set_on_top', { on }),
+  puppetOnTop: () => invoke<boolean>('puppet_on_top'),
+  /** Avatar window opacity slider: the main window applies it and sends the options back. */
+  puppetSetOpacity: (opacity: number) => invoke<void>('puppet_set_opacity', { opacity }),
   /** Saved avatar characters, sorted by name. */
   avatarList: () => invoke<Rig[]>('avatar_list'),
   /** Copies a PNG/JPEG/WebP (max 20 MB, 8192 px per side) picked in the open dialog into a new character. */

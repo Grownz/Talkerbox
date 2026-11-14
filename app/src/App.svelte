@@ -114,7 +114,9 @@
       }
     })()
     const timer = setInterval(refresh, 5000)
-    const unwatch = watchPuppet(avatarOptions)
+    const unwatch = watchPuppet(avatarOptions, (v) => {
+      if (settings) settings.avatarOpacity = v
+    })
     addEventListener('pagehide', saveNow)
     return () => {
       saveNow()

@@ -87,8 +87,16 @@ export function partMatrix(parts: RigPart[], part: RigPart, pose: Pose, w: numbe
   return m
 }
 
-/** Blink: squashes the eye vertically toward its centre line `cy` (closed 0..1). */
-export const blinkMatrix = (cy: number, closed: number): Mat => scaleAbout(1, 1 - Math.min(1, Math.max(0, closed)), [0, cy])
+/** Where the closing lids meet, as a fraction of the eye height from its top: the upper lid does 2/3 of the travel. */
+export const LID_MEET = 2 / 3
+
+/**
+ * Blink of an eye spanning `y0` (top, upper lid) to `y1` (bottom, lower lid), closed 0..1: the eye texture squashes
+ * vertically about the line y0 + LID_MEET * (y1 - y0), so the upper lid moves down by 2/3 * closed * height and the
+ * lower lid up by 1/3 * closed * height; fully closed they meet 1/3 of the height above the lower lid.
+ */
+export const blinkMatrix = (y0: number, y1: number, closed: number): Mat =>
+  scaleAbout(1, 1 - Math.min(1, Math.max(0, closed)), [0, y0 + LID_MEET * (y1 - y0)])
 
 export const scalePolygon = (pts: Point[], sx: number, sy: number, about: Point) => pts.map((p) => apply(scaleAbout(sx, sy, about), p))
 
@@ -412,7 +420,9 @@ export function drawRig(
         ctx.fillStyle = p.lid ?? DEFAULT_LID
         ctx.fill()
       }
-      ctx.transform(...blinkMatrix(p.pivot[1] * h, pose.blink))
+      // Lid positions from the eye outline (formerly the pivot line), so saved rigs need no new field.
+      const b = bbox(p.polygon)
+      ctx.transform(...blinkMatrix(b.y0 * h, b.y1 * h, pose.blink))
     }
     if (!mouth) texture()
     else {

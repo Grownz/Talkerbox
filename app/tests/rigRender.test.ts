@@ -60,14 +60,16 @@ test('a hand follows its arm', () => {
   assert.ok(Number.isFinite(partMatrix([a, b], a, { ...REST, armL: 10, armR: 10 }, 1, 1)[0]))
 })
 
-test('blink squashes toward the centre line', () => {
-  const m = blinkMatrix(10, 0.5)
-  near(apply(m, [3, 10]), [3, 10])
-  near(apply(m, [3, 14]), [3, 12])
-  near(apply(m, [3, 6]), [3, 8])
-  near(apply(blinkMatrix(10, 1), [3, 0]), [3, 10])
-  assert.ok(isIdentity(blinkMatrix(10, 0)))
-  near(apply(blinkMatrix(10, 2), [3, 0]), [3, 10]) // clamped
+test('blink: the upper lid travels 2/3 of the eye height, the lower lid 1/3', () => {
+  // Eye from y 10 (upper lid) to 40 (lower lid): height 30.
+  const half = blinkMatrix(10, 40, 0.5)
+  near(apply(half, [3, 10]), [3, 20]) // upper lid down by 0.5 * 2/3 * 30
+  near(apply(half, [3, 40]), [3, 35]) // lower lid up by 0.5 * 1/3 * 30
+  const shut = blinkMatrix(10, 40, 1)
+  near(apply(shut, [3, 10]), [3, 30]) // both meet 2/3 of the way down,
+  near(apply(shut, [3, 40]), [3, 30]) // 1/3 above the lower lid
+  assert.ok(isIdentity(blinkMatrix(10, 40, 0)))
+  near(apply(blinkMatrix(10, 40, 2), [3, 10]), [3, 30]) // clamped
 })
 
 test('open mouth scales the interior vertically', () => {

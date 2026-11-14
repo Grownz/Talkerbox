@@ -35,6 +35,9 @@
   // the pointer is over the window (or a bar button has keyboard focus).
   const autoHide = $derived(opts.bg === 'transparent' && opts.opacity < 100)
   let hover = $state(false)
+  // The opacity slider: while it is dragged the bar stays shown and echoes of older values do not move it back.
+  let sliding = $state(false)
+  let pinned = $state(false)
   let hideTimer: ReturnType<typeof setTimeout> | undefined
   const enter = () => {
     clearTimeout(hideTimer)
@@ -45,12 +48,22 @@
     hideTimer = setTimeout(() => (hover = false), 600)
   }
   const drag = (e: MouseEvent) => {
-    if (e.button === 0 && !(e.target as Element).closest('button')) void getCurrentWindow().startDragging()
+    if (e.button === 0 && !(e.target as Element).closest('button, input')) void getCurrentWindow().startDragging()
   }
   // Errors cannot be shown in this window; the console is the only place for them.
   const report = (what: string) => (e: unknown) => console.warn(`${what} failed: ${errText(e)}`)
 
+  const setOpacity = (e: Event) => {
+    opts.opacity = +(e.currentTarget as HTMLInputElement).value
+    api.puppetSetOpacity(opts.opacity).catch(report('Setting the opacity'))
+  }
+  const togglePin = () => {
+    const on = !pinned
+    api.puppetSetOnTop(on).then(() => (pinned = on), report('Pinning'))
+  }
+
   onMount(() => {
+    api.puppetOnTop().then((on) => (pinned = on), report('Reading the pin state'))
     let puppet: Puppet = new DemoPuppet(host)
     let shown = 'demo'
     let imageUrl = ''
@@ -128,7 +141,7 @@
         run()
       }),
       listen<AvatarOptions>('avatar://options', (e) => {
-        opts = e.payload
+        opts = sliding ? { ...e.payload, opacity: opts.opacity } : e.payload
         // A saved edit (new rev) reloads the same character.
         const key = opts.character ? `${opts.character}#${opts.rev ?? 0}` : 'demo'
         if (key !== shown) {
@@ -171,10 +184,35 @@
 >
   {#if !docked}
     <!-- svelte-ignore a11y_no_static_element_interactions (dragging the window is mouse-only, like a native title bar) -->
-    <header class="tb" class:auto={autoHide} class:show={hover} onmousedown={drag}>
+    <header class="tb" class:auto={autoHide} class:show={hover || sliding} onmousedown={drag}>
       <span class="tt"><Icon name="figure" />Avatar</span>
+      <input
+        class="op"
+        type="range"
+        min="0"
+        max="100"
+        step="1"
+        value={opts.opacity}
+        title="Opacity {opts.opacity}%"
+        aria-label="Avatar opacity"
+        oninput={setOpacity}
+        onpointerdown={() => (sliding = true)}
+        onpointerup={() => (sliding = false)}
+        onpointercancel={() => (sliding = false)}
+        onblur={() => (sliding = false)}
+      />
+      <div class="btns">
       <button type="button" class="tbb" title="Dock into the main window" aria-label="Dock into the main window" onclick={() => api.puppetDock().catch(report('Docking'))}
         ><Icon name="dock" /></button
+      >
+      <button
+        type="button"
+        class="tbb"
+        class:on={pinned}
+        title={pinned ? 'Stop keeping on top' : 'Keep on top'}
+        aria-label="Always on top"
+        aria-pressed={pinned}
+        onclick={togglePin}><Icon name="pin" /></button
       >
       <button type="button" class="tbb" title="Minimize" aria-label="Minimize" onclick={() => getCurrentWindow().minimize().catch(report('Minimizing'))}
         ><Icon name="minus" /></button
@@ -182,6 +220,7 @@
       <button type="button" class="tbb close" title="Close the avatar window" aria-label="Close" onclick={() => puppetClose().catch(report('Closing'))}
         ><Icon name="x" /></button
       >
+      </div>
     </header>
   {/if}
   <div class="figure" bind:this={host} style:opacity={docked || opts.bg === 'transparent' ? 1 : opts.opacity / 100}></div>
@@ -206,7 +245,8 @@
     position: absolute;
     inset: 0 0 auto;
     z-index: 1;
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
     height: 32px;
     padding-left: 10px;
@@ -227,7 +267,6 @@
     opacity: 1;
   }
   .tt {
-    flex: 1;
     min-width: 0;
     display: flex;
     align-items: center;
@@ -240,6 +279,23 @@
     width: 16px;
     height: 16px;
     flex: none;
+  }
+  .op {
+    width: clamp(48px, 30vw, 120px);
+    min-width: 0;
+    margin: 0 8px;
+  }
+  .btns {
+    display: flex;
+    justify-content: flex-end;
+  }
+  @media (max-width: 330px) {
+    .op {
+      display: none;
+    }
+  }
+  .tbb.on {
+    color: var(--focus);
   }
   .tbb {
     width: 40px;

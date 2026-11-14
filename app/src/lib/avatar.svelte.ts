@@ -51,7 +51,7 @@ export async function undock(bg: AvatarBg) {
 export const docked = new LocalBus()
 
 /** Tracks the puppet window; `options` is read whenever a (re)created puppet asks for its settings. */
-export function watchPuppet(options: () => AvatarOptions): () => void {
+export function watchPuppet(options: () => AvatarOptions, onOpacity: (v: number) => void): () => void {
   const off = [
     listen('avatar://ready', () => {
       // A window that opens while the avatar is docked is stray (it must not show twice): close it again.
@@ -65,6 +65,8 @@ export function watchPuppet(options: () => AvatarOptions): () => void {
       avatar.open = false
       avatar.docked = true
     }),
+    // The avatar window opacity slider; the options effect in App.svelte sends the value back to the window.
+    listen<number>('avatar://opacity', (e) => onOpacity(e.payload)),
     // WebView2 keeps a minimised page running; the docked view pauses its drawing like the window does.
     listen<boolean>('app://minimized', (e) => docked.emit('avatar://minimized', e.payload)),
   ]

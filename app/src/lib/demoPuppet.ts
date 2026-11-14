@@ -18,8 +18,10 @@ const SVG = `<svg viewBox="0 0 200 260" preserveAspectRatio="xMidYMid meet" styl
       <path d="M44 86 Q48 30 100 30 Q152 30 156 86 Q132 56 100 58 Q68 56 44 86 Z" fill="#5a3b2a"/>
       <ellipse cx="78" cy="96" rx="8" ry="10" fill="#222"/>
       <ellipse cx="122" cy="96" rx="8" ry="10" fill="#222"/>
-      <rect data-lid="l" x="68" y="84" width="20" height="0" fill="#f2c9a0"/>
-      <rect data-lid="r" x="112" y="84" width="20" height="0" fill="#f2c9a0"/>
+      <rect data-lid="up" x="68" y="84" width="20" height="0" fill="#f2c9a0"/>
+      <rect data-lid="up" x="112" y="84" width="20" height="0" fill="#f2c9a0"/>
+      <rect data-lid="lo" x="68" y="108" width="20" height="0" fill="#f2c9a0"/>
+      <rect data-lid="lo" x="112" y="108" width="20" height="0" fill="#f2c9a0"/>
       <ellipse data-mouth cx="100" cy="132" rx="16" ry="2" fill="#7a2630"/>
     </g>
   </g>
@@ -29,7 +31,8 @@ export class DemoPuppet implements Puppet {
   private body: SVGGElement
   private head: SVGGElement
   private mouthEl: SVGEllipseElement
-  private lids: SVGRectElement[]
+  private lidsUp: SVGRectElement[]
+  private lidsLo: SVGRectElement[]
   private arms: SVGPathElement[]
 
   constructor(host: HTMLElement) {
@@ -38,7 +41,8 @@ export class DemoPuppet implements Puppet {
     this.body = q('[data-body]')
     this.head = q('[data-head]')
     this.mouthEl = q('[data-mouth]')
-    this.lids = [q('[data-lid="l"]'), q('[data-lid="r"]')]
+    this.lidsUp = [...host.querySelectorAll<SVGRectElement>('[data-lid="up"]')]
+    this.lidsLo = [...host.querySelectorAll<SVGRectElement>('[data-lid="lo"]')]
     this.arms = [q('[data-arm="l"]'), q('[data-arm="r"]')]
   }
 
@@ -47,7 +51,13 @@ export class DemoPuppet implements Puppet {
     const wide = Math.min(1, Math.max(-1, pose.wide || 0))
     this.mouthEl.setAttribute('ry', String((2 + mouth * 14) * (1 - 0.3 * Math.max(0, wide))))
     this.mouthEl.setAttribute('rx', String((16 - mouth * 4) * (1 + 0.25 * wide)))
-    for (const l of this.lids) l.setAttribute('height', String(Math.min(1, Math.max(0, pose.blink)) * 24))
+    // Lids span y 84..108 (24): the upper one covers 2/3 of it, the lower one 1/3 (LID_MEET in rigRender).
+    const blink = Math.min(1, Math.max(0, pose.blink))
+    for (const l of this.lidsUp) l.setAttribute('height', String(blink * 16))
+    for (const l of this.lidsLo) {
+      l.setAttribute('y', String(108 - blink * 8))
+      l.setAttribute('height', String(blink * 8))
+    }
     this.body.setAttribute('transform', `rotate(${pose.sway * 1.25} 100 260)`)
     this.head.setAttribute('transform', `rotate(${t ? Math.sin((t / 1000) * 1.3) * 3 + mouth * 2 : 0} 100 160)`)
     // The figure faces us: its right arm is on the left of the image.

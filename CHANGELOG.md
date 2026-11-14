@@ -5,6 +5,25 @@ versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versi
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-14
+
+### Added
+- **Always on top**: a pin button in the avatar window's title bar (between dock and minimise) keeps the window above
+  other windows; the choice is saved.
+- **Opacity slider in the avatar title bar**, in the middle of the bar and in sync with the slider in the Avatar menu.
+  The bar still fades out on a transparent background and stays visible while the slider is used.
+
+### Changed
+- Avatar lip-sync: the mouth moves 60 ms ahead of the sound, as real lips do; playback timing on the shared clock is
+  unchanged.
+- Avatar lip-sync: the lips close briefly for P, B and M, found in the sentence audio (a 30-120 ms closure with a voiced
+  hum or a release burst). The sentence event carries an optional `close` array; older senders keep working.
+- Avatar blink: the eyelids close together, the upper lid travelling 2/3 of the way and the lower lid 1/3. This applies
+  to every character and the demo figure; the eye pivot no longer affects the blink.
+- Avatar blink timing is more human: gaps follow a lognormal spread (mostly 2-6 s), about one blink in ten is a quick
+  double blink, the eyes also blink when a sentence finishes (never within 1 s of the previous blink), and the lids
+  close faster (65 ms) than they open (125 ms).
+
 ## [0.6.1] - 2026-11-14
 
 ### Fixed
@@ -210,7 +229,8 @@ First early release.
 - The speech engine only accepts local requests (local Host header, JSON content type) and rejects oversized or
   malformed voice files.
 
-[Unreleased]: https://github.com/Grownz/Talkerbox/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/Grownz/Talkerbox/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/Grownz/Talkerbox/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/Grownz/Talkerbox/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Grownz/Talkerbox/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/Grownz/Talkerbox/compare/v0.5.0...v0.5.1

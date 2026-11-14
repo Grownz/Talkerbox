@@ -5,7 +5,7 @@ A Windows desktop chatbot that talks back. Talkerbox chats with a language model
 speech engine, listens to your voice, and can show a talking avatar made from your own picture. Everything runs on
 your computer; after the one-time model downloads it works offline.
 
-> Status: early pre-release (0.6.1). The installer is not code-signed, so Windows SmartScreen warns on first start.
+> Status: early pre-release (0.6.2). The installer is not code-signed, so Windows SmartScreen warns on first start.
 
 [Changelog](CHANGELOG.md) · [Developer documentation](app/README.md) · [TTS sidecar](tts-sidecar/README.md) ·
 [Security](SECURITY.md) · [MIT licence](LICENSE)

@@ -17,6 +17,8 @@
     mic: { d: 'M12 3.5a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0v-5a3 3 0 0 0-3-3zM6 11a6 6 0 0 0 12 0M12 17v3.5M9 20.5h6' },
     x: { d: 'M6.5 6.5l11 11M17.5 6.5l-11 11' },
     minus: { d: 'M6 12h12' },
+    // Push pin: always on top.
+    pin: { d: 'M9 4.5h6M10 4.5v5.2L7.5 13h9L14 9.7V4.5M12 13v6.5' },
     // Window with a left side panel and an arrow into it: dock the avatar into the main window's sidebar.
     dock: { d: 'M5.5 4.5h13A2.5 2.5 0 0 1 21 7v10a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17V7a2.5 2.5 0 0 1 2.5-2.5zM9 4.5v15M17 9.5 14.5 12l2.5 2.5M14.5 12h4' },
     check: { d: 'm5 12.5 4.5 4.5L19 7.5' },

@@ -98,13 +98,20 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   classifier on the decoded sentence audio (no model, no extra dependency) looks at where the voiced energy sits after
   pre-emphasis. Energy pulled up to 1.7 kHz and more reads as wide (E, I), a low first formant without it as round
   (O, U, W), a high first formant as open (A), and hiss above 3.5 kHz as teeth (F, V, S), which closes the mouth a
-  little. Loudness sets how far the mouth opens, the shape how; the shape eases over about 70 ms so neighbouring
-  sounds blend, silence is neutral, and without shape data (older senders) the mouth follows the loudness only. The
+  little. Lip closures (P, B, M) are found too: a 30-120 ms stretch far below the vowels, right after speech, ended by
+  an abrupt onset, and either voiced underneath (the hum of M, B) or released with a non-hiss burst; the event's
+  optional `close` array marks them and the lips snap shut there (word gaps without a burst, longer pauses and
+  fricative onsets do not count). Loudness sets how far the mouth opens, the shape how; the shape eases over about
+  70 ms so neighbouring sounds blend, silence is neutral, and without shape data (older senders) the mouth follows the
+  loudness only. The avatar window samples every sentence `LEAD_MS` (60 ms, `src/lib/avatarQueue.ts`) ahead of the
+  shared clock, so the mouth moves slightly before the sound as real lips do; `startMs` stays the true start. The
   sentence's `source` (`chat` or `test`) keeps the two speakers apart: stopping "Test speech" never clears the mouth
   of a reply being read, and the other way round. Kokoro phoneme timing was checked and not used: the base model
   `kokoro-v1.0.onnx` has no duration output (only some pack exports have one), so it would not work for the default
   voices. `src/lib/poseGen.ts` turns this into a pose every frame: the mouth opens with the smoothed loudness,
-  the eyes blink at random every 2 to 6 seconds, the figure sways a little, and while it speaks the arms gesture with
+  the eyes blink at random (lognormal gaps, mostly 2 to 6 s, about one blink in ten doubled; lids close in 65 ms and
+  open in 125 ms) and when a sentence finishes (the queue counts finished sentences; never within 1 s of the last
+  blink), the figure sways a little, and while it speaks the arms gesture with
   a slow noisy swing whose size follows the speech energy (each limb with its own rhythm, hands follow their arm, legs
   only shift the weight a little), easing back to rest when it is quiet. With Windows "reduce motion" there is no sway
   and no gesture; mouth and blinking still work. Characters are drawn on a canvas with the part editor's renderer
@@ -112,7 +119,7 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   and part textures are prepared once per load, so each frame only moves them, and drawing pauses while the window is
   hidden or minimised (the Rust side reports minimising with `avatar://minimized`, because WebView2 keeps running a
   minimised webview). The window has no native frame (`decorations: false`, so the title bar can be transparent):
-  `PuppetView` draws a 32 px title bar with dock, minimise and close (drag via `startDragging`, Tauri keeps the edges
+  `PuppetView` draws a 32 px title bar with an opacity slider in the middle (synced with the Avatar menu slider: `puppet_set_opacity` tells the main window, which sends the options back; the bar stays shown while the slider is dragged) and dock, pin (always on top: `puppet_set_on_top` sets it and saves `avatarOnTop`, backend-owned like the bounds; `puppet_on_top` reads it), minimise and close (drag via `startDragging`, Tauri keeps the edges
   resizable, shadow only on opaque windows, minimum 160 x 120). On a transparent background below 100 % opacity the
   bar fades out and fades in while the pointer is over the window (out 0.6 s after it leaves, also shown while a bar
   button has focus); otherwise it is always shown above the figure. **Docking**: the dock button calls `puppet_dock`,
@@ -199,7 +206,8 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
   top end (shoulder, wrist, hip), the others at their centre. "Attached to" makes a part move with another one (a new
   hand is attached to the arm of its side); loops are not offered and are refused on save. The list sets the drawing
   order (later parts are drawn in front), and each part can be renamed, deleted or hidden on the canvas. Eyes blink
-  by squashing toward their pivot line over an eyelid colour, sampled from the image around the eye (pickable). The
+  over an eyelid colour, sampled from the image around the eye (pickable): the eye squashes toward the line 2/3 down
+  its outline, so the upper lid travels 2/3 of the way and the lower lid 1/3 (the pivot plays no part). The
   mouth opens by filling an optional "Open shape" (the dark inside, drawn within the mouth) in a pickable colour,
   scaled vertically with the opening (and a little wider or narrower with the mouth shape); without it a shrunk copy
   of the mouth outline is used. **Lips** (optional, on the mouth): "Upper lip" and "Lower lip" outline each lip like
@@ -549,7 +557,7 @@ them.
   `allow-avatar-image`, `allow-avatar-fill` (show the selected character and its stored AI fill),
   `allow-puppet-ready` (tells the main window it is ready; the backend emits `avatar://ready`, so the page needs no
   emit permission), `core:event:allow-listen` / `allow-unlisten` for the `avatar://` events, and for its own title
-  bar `allow-puppet-dock` and `allow-puppet-close` (both only act on the avatar window) plus
+  bar `allow-puppet-dock` and `allow-puppet-close` (both only act on the avatar window), `allow-puppet-set-on-top` / `allow-puppet-on-top` (the saved pin flag) and `allow-puppet-set-opacity` (only emits the value to the main window) plus
   `core:window:allow-start-dragging` and `core:window:allow-minimize` (these two take a window label, so they could
   also drag or minimise the main window; nothing worse). It cannot call any other app command, emit events, or use
   other window, app, path, webview or dialog APIs. A Rust test (`avatar::tests::puppet_capability_is_pinned`) pins
