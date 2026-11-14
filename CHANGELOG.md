@@ -5,6 +5,16 @@ versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versi
 
 ## [Unreleased]
 
+### Added
+- Ollama server output: lines show their level (ERROR, WARN, INFO, DEBUG) as a coloured text label and a short HH:MM:SS
+  time (full timestamp on hover), with level filter chips, a search box with match count and highlighting, a Raw toggle
+  for the original lines and a Copy button for the shown lines. The controls only change the view; nothing is sent to
+  the server.
+- Ollama server output: topic groups (Talkerbox, Start & config, GPU & memory, Model loading, Model details, Generation,
+  Requests, Status checks, Other) with line counts and Overview / Loading / All presets, combined with the level chips
+  and search. Runs of lines hidden by a topic collapse into one "N lines hidden" button that shows that topic; status
+  checks and model details start hidden. Bare `Error:` start-up failures now count as errors.
+
 ## [0.6.2] - 2026-11-14
 
 ### Added

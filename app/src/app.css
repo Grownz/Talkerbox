@@ -830,9 +830,90 @@ svg.flag {
   color: #cfd6e0;
   font: 12px/1.55 var(--mono);
   padding: 10px 12px;
+  border-radius: var(--r);
+  /* Level colours: the dark theme's err/busy/acc-text/text-3 values, fixed because the console stays dark in both
+     themes. All are >= 6.5:1 on #0d1015 (WCAG AA needs 4.5:1). */
+  --log-err: #ff8585;
+  --log-warn: #f2b84b;
+  --log-info: #9dbdff;
+  --log-dim: #9199a6;
+}
+.term .ln {
   white-space: pre-wrap;
   word-break: break-all;
-  border-radius: var(--r);
+  min-height: 1.55em; /* empty lines keep their height */
+}
+.term .lv {
+  display: inline-block;
+  min-width: 6ch;
+  margin-right: 1ch;
+  font-weight: 700;
+}
+.term .ts {
+  margin-right: 1ch;
+  color: var(--log-dim);
+}
+.term .error {
+  color: var(--log-err);
+}
+.term .warn {
+  color: var(--log-warn);
+}
+.term .info .lv {
+  color: var(--log-info);
+}
+.term .debug {
+  color: var(--log-dim);
+}
+/* Placeholder for a run of lines hidden by the topic filter: a real button, dashed so it never reads as output. */
+.term .hid {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 1.55em;
+  margin: 1px 0;
+  padding: 0 6px;
+  text-align: left;
+  font: italic 12px/1.55 var(--mono);
+  color: var(--log-dim);
+  background: transparent;
+  border: 1px dashed #3a414d;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.term .hid:hover {
+  color: #cfd6e0;
+  background: #1a1f27;
+  border-color: var(--log-dim);
+}
+.term-n {
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+.term-presets {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+}
+.term mark {
+  background: var(--log-warn);
+  color: #0d1015;
+  border-radius: 2px;
+}
+.term-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.term-search {
+  width: 200px;
+  height: var(--h-sm);
+  font-size: var(--fs-sm);
+}
+.term-count {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
 }
 .newlines {
   position: absolute;

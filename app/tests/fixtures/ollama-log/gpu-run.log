@@ -1,0 +1,158 @@
+--- Talkerbox started C:\Users\USER\AppData\Local\Programs\Ollama\ollama.exe serve ---
+time=2030-01-02T10:00:00.100+01:00 level=INFO source=routes.go:2400 msg="server config" env="map[OLLAMA_HOST:http://127.0.0.1:11434 OLLAMA_MODELS:C:\\Users\\USER\\models]"
+time=2030-01-02T10:00:00.120+01:00 level=INFO source=routes.go:2401 msg="Ollama cloud disabled: true"
+time=2030-01-02T10:00:00.130+01:00 level=INFO source=images.go:1000 msg="total blobs: 0"
+time=2030-01-02T10:00:00.131+01:00 level=INFO source=images.go:1010 msg="total unused blobs removed: 0"
+time=2030-01-02T10:00:00.140+01:00 level=INFO source=routes.go:2500 msg="Listening on 127.0.0.1:11434 (version 0.0.0-example)"
+time=2030-01-02T10:00:00.141+01:00 level=INFO source=model_recommendations.go:100 msg="model recommendations cache sleep scheduled" wait=1h0m0s consecutive_failures=0
+time=2030-01-02T10:00:00.150+01:00 level=INFO source=runner.go:50 msg="discovering available GPUs..."
+time=2030-01-02T10:00:00.160+01:00 level=WARN source=amd.go:400 msg="AMD driver is too old. Update your AMD driver to enable GPU inference."
+time=2030-01-02T10:00:01.200+01:00 level=INFO source=runner.go:400 msg="dropping integrated GPU; to enable, set OLLAMA_IGPU_ENABLE=1" id=1 library=Vulkan name=Vulkan1 description="Example iGPU"
+time=2030-01-02T10:00:01.900+01:00 level=INFO source=types.go:30 msg="inference compute" id=0 library=CUDA compute=8.0 name=CUDA0 description="Example GPU 0" total="16.0 GiB" available="15.0 GiB"
+time=2030-01-02T10:00:01.901+01:00 level=INFO source=routes.go:2550 msg="vram-based default context" total_vram="16.0 GiB" default_num_ctx=16384
+[GIN] 2030/01/02 - 10:00:02 | 200 |       0s |       127.0.0.1 | GET      "/api/version"
+[GIN] 2030/01/02 - 10:00:02 | 200 |      1ms |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2030/01/02 - 10:00:02 | 200 |       0s |       127.0.0.1 | GET      "/api/ps"
+[GIN] 2030/01/02 - 10:00:04 | 404 |      1ms |       127.0.0.1 | POST     "/api/chat"
+[GIN] 2030/01/02 - 10:00:04 | 404 |      2ms |       127.0.0.1 | POST     "/api/show"
+[GIN] 2030/01/02 - 10:00:05 | 200 |    0.4s |       127.0.0.1 | POST     "/api/pull"
+time=2030-01-02T10:00:06.000+01:00 level=INFO source=download.go:180 msg="downloading aaaaaaaaaaaa in 4 100 MB part(s)"
+time=2030-01-02T10:00:12.000+01:00 level=INFO source=download.go:180 msg="downloading bbbbbbbbbbbb in 1 70 B part(s)"
+time=2030-01-02T10:00:12.500+01:00 level=INFO source=download.go:180 msg="downloading cccccccccccc in 1 1 KB part(s)"
+[GIN] 2030/01/02 - 10:00:13 | 200 |     8.1s |       127.0.0.1 | POST     "/api/pull"
+[GIN] 2030/01/02 - 10:00:14 | 200 |      9ms |       127.0.0.1 | GET      "/api/tags"
+[GIN] 2030/01/02 - 10:00:14 | 200 |     20ms |       127.0.0.1 | POST     "/api/show"
+[GIN] 2030/01/02 - 10:00:17 | 200 |       0s |       127.0.0.1 | GET      "/api/ps"
+[GIN] 2030/01/02 - 10:00:20 | 200 |       0s |       127.0.0.1 | GET      "/api/version"
+time=2030-01-02T10:00:21.000+01:00 level=INFO source=sched.go:1100 msg="disabling mmap for llama-server load by default" model=C:\Users\USER\models\blobs\sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+time=2030-01-02T10:00:21.001+01:00 level=INFO source=server.go:100 msg="using llama-server for model" model=C:\Users\USER\models\blobs\sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+time=2030-01-02T10:00:21.002+01:00 level=WARN source=server.go:110 msg="requested context size too large for model" num_ctx=16384 n_ctx_train=4096
+time=2030-01-02T10:00:21.003+01:00 level=INFO source=llama_server.go:460 msg="starting llama-server" cmd="llama-server --port 50001 --host 127.0.0.1 -c 4096 -np 1"
+time=2030-01-02T10:00:21.010+01:00 level=INFO source=sched.go:650 msg="system memory" total="32.0 GiB" free="20.0 GiB" free_swap="8.0 GiB"
+time=2030-01-02T10:00:21.011+01:00 level=INFO source=sched.go:655 msg="gpu memory" id=0 library=CUDA available="15.0 GiB" free="15.5 GiB" minimum="450.0 MiB" overhead="0 B"
+time=2030-01-02T10:00:21.012+01:00 level=INFO source=llama_server.go:1090 msg="loading model via llama-server" model=C:\Users\USER\models\blobs\sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+time=2030-01-02T10:00:21.013+01:00 level=INFO source=llama_server.go:1350 msg="waiting for llama-server to start responding"
+time=2030-01-02T10:00:21.014+01:00 level=INFO source=llama_server.go:1400 msg="waiting for llama-server to become available" status="llm server error"
+srv  llama_server: initializing ...
+load_backend: loaded CPU backend from C:\Users\USER\AppData\Local\Programs\Ollama\lib\ollama\ggml-cpu.dll
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 16384 MiB):
+  Device 0: Example GPU 0, compute capability 8.0, VMM: yes, VRAM: 16384 MiB
+load_backend: loaded CUDA backend from C:\Users\USER\AppData\Local\Programs\Ollama\lib\ollama\ggml-cuda.dll
+cmn  common_param: common_params_print_info: build 1 (0000000) for Windows
+cmn  common_param: device_info:
+cmn  common_param:   - CPU     : Example CPU (32768 MiB, 20000 MiB free)
+cmn  common_param:   - CUDA0   : Example GPU 0 (16384 MiB, 15500 MiB free)
+cmn  common_param: system_info: n_threads = 8 / 16 | CPU : AVX2 = 1
+srv  init_listene: The UI is disabled
+srv          init: using 8 threads for HTTP server
+srv  server_setup: security: no API key is set
+srv    load_model: loading model 'C:\Users\USER\models\blobs\sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+cmn  common_fit_a: fitting params to device memory ...
+common_params_fit_impl: getting device memory data for initial parameters:
+common_memory_breakdown_print: | memory breakdown [MiB] | total   free    self   model   context   compute |
+common_memory_breakdown_print: |   - CUDA0 (Example)    | 16384 = 15500 + ( 900 =   700 +     150 +      50) |
+common_params_fit_impl: will leave 14600 >= 1024 MiB of free device memory, no changes needed
+common_fit_params: successfully fit params to free device memory
+llama_model_loader: loaded meta data with 20 key-value pairs and 150 tensors from C:\Users\USER\models\blobs\sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+llama_model_loader: - kv   0:                       general.architecture str              = llama
+llama_model_loader: - kv   1:                               general.name str              = Example 1B
+llama_model_loader: - kv   2:                       llama.context_length u32              = 4096
+llama_model_loader: - kv   3:                          llama.block_count u32              = 16
+llama_model_loader: - kv   4:                       tokenizer.ggml.model str              = gpt2
+llama_model_loader: - type  f32:   40 tensors
+llama_model_loader: - type  f16:  110 tensors
+print_info: file format = GGUF V3 (latest)
+print_info: file size   = 700.00 MiB (16.00 BPW)
+llama_prepare_model_devices: using device CUDA0 (Example GPU 0) - 15500 MiB free
+load: 0 unused tokens
+load: printing all EOG tokens:
+load:   - 2 ('<|im_end|>')
+load: special tokens cache size = 10
+print_info: arch                  = llama
+print_info: n_ctx_train           = 4096
+print_info: n_layer               = 16
+print_info: n_head                = 8
+print_info: model params          = 1.00 B
+print_info: general.name          = Example 1B
+print_info: EOS token             = 2 '<|im_end|>'
+load_tensors: loading model tensors, this can take a while... (load_mode = none)
+load_tensors: offloaded 17/17 layers to GPU
+load_tensors:        CUDA0 model buffer size =   700.00 MiB
+time=2030-01-02T10:00:22.000+01:00 level=INFO source=llama_server.go:1400 msg="waiting for llama-server to become available" status="llm server loading model"
+cmn  common_init_: added <|im_end|> logit bias = -inf
+llama_context: constructing llama_context
+llama_context: n_ctx                 = 4096
+llama_context: n_batch               = 512
+llama_context: flash_attn            = auto
+llama_kv_cache:      CUDA0 KV buffer size =   150.00 MiB
+llama_kv_cache: size =  150.00 MiB (  4096 cells,  16 layers,  1/1 seqs)
+sched_reserve: reserving ...
+resolve_fused_ops: Flash Attention enabled
+sched_reserve:      CUDA0 compute buffer size =    50.00 MiB
+sched_reserve: reserve took 3.00 ms, sched copies = 1
+cmn          init: llama threadpool init, n_threads = 8
+cmn  common_init_: warming up the model with an empty run - please wait ...
+srv    load_model: initializing, n_slots = 1, n_ctx_slot = 4096
+spec common_specu: no implementations specified for speculative decoding
+slot   load_model: id  0 | task -1 | new slot, n_ctx = 4096
+srv    load_model: prompt cache is enabled, size limit: 4096 MiB
+srv          init: init: chat template, example_format: '<|im_start|>system
+You are a helpful assistant<|im_end|>
+<|im_start|>user
+Hello<|im_end|>
+<|im_start|>assistant
+Hi there<|im_end|>
+<|im_start|>assistant
+'
+srv          init: init: chat template, thinking = 0
+srv  server_run_i: model loaded
+srv  server_on_li: listening on http://127.0.0.1:50001
+srv  update_slots: all slots are idle
+time=2030-01-02T10:00:22.300+01:00 level=INFO source=llama_server.go:1410 msg="llama-server started in 0.40 seconds"
+time=2030-01-02T10:00:22.301+01:00 level=INFO source=images.go:430 msg="template selection" model=registry.ollama.ai/library/example:1b selected=go_template
+time=2030-01-02T10:00:22.302+01:00 level=INFO source=sched.go:770 msg="loaded runners" count=1
+srv  server_strea: conv_id= (empty=1)
+slot get_availabl: id  0 | task -1 | selected slot by LRU, n_tokens = 0, t_last = -1
+srv  get_availabl: updating prompt cache
+srv          load:  - looking for better prompt, base f_keep = -1.000, f_sim = 0.000
+srv        update:  - cache state: 0 prompts, 0.000 MiB (limits: 4096.000 MiB)
+slot launch_slot_: id  0 | task -1 | sampler chain: logits -> top-k -> top-p -> temp-ext -> dist
+slot launch_slot_: id  0 | task -1 | sampler params:
+	repeat_last_n = 64, repeat_penalty = 1.000
+	top_k = 40, top_p = 0.900, temp = 0.800
+slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+slot   operator(): id  0 | task 0 | new prompt, n_ctx_slot = 4096, task.n_tokens = 30
+slot init_sampler: id  0 | task 0 | init sampler, took 0.00 ms
+slot print_timing: id  0 | task 0 | prompt eval time =      50.00 ms /    30 tokens
+slot print_timing: id  0 | task 0 |        eval time =      20.00 ms /    10 tokens
+slot print_timing: id  0 | task 0 |       total time =      70.00 ms /    40 tokens
+slot      release: id  0 | task 0 | stop processing: n_tokens = 40, truncated = 0
+srv  update_slots: all slots are idle
+[GIN] 2030/01/02 - 10:00:22 | 200 |    1.30s |       127.0.0.1 | POST     "/api/chat"
+[GIN] 2030/01/02 - 10:00:23 | 200 |       0s |       127.0.0.1 | GET      "/api/ps"
+[GIN] 2030/01/02 - 10:00:26 | 200 |       0s |       127.0.0.1 | GET      "/api/version"
+srv  server_strea: conv_id= (empty=1)
+slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.500
+slot launch_slot_: id  0 | task 5 | processing task, is_child = 0
+slot   operator(): id  0 | task 5 | new prompt, n_ctx_slot = 4096, task.n_tokens = 44
+[GIN] 2030/01/02 - 10:00:27 | 200 |    1.50s |       127.0.0.1 | POST     "/api/chat"
+srv          stop: cancel task, id_task = 5
+slot      release: id  0 | task 5 | stop processing: n_tokens = 900, truncated = 0
+srv  update_slots: all slots are idle
+[GIN] 2030/01/02 - 10:00:29 | 400 |    500µs |       127.0.0.1 | POST     "/api/chat"
+[GIN] 2030/01/02 - 10:00:29 | 200 |       0s |       127.0.0.1 | GET      "/api/ps"
+srv  server_strea: conv_id= (empty=1)
+srv  get_availabl: updating prompt cache
+srv   prompt_save:  - saving prompt with length 900, total state size = 20.000 MiB
+srv          load:  - looking for better prompt, base f_keep = 0.020, f_sim = 0.700
+slot print_timing: id  0 | task 910 | prompt eval time =      12.00 ms /     6 tokens
+slot print_timing: id  0 | task 910 |       total time =      90.00 ms /    50 tokens
+slot      release: id  0 | task 910 | stop processing: n_tokens = 80, truncated = 0
+[GIN] 2030/01/02 - 10:00:30 | 200 |   100ms |       127.0.0.1 | POST     "/api/generate"
+[GIN] 2030/01/02 - 10:00:31 | 200 |     40ms |       127.0.0.1 | POST     "/api/create"
+[GIN] 2030/01/02 - 10:00:31 | 200 |     10ms |       127.0.0.1 | POST     "/api/copy"
+[GIN] 2030/01/02 - 10:00:31 | 200 |     10ms |       127.0.0.1 | DELETE   "/api/delete"
+[GIN] 2030/01/02 - 10:00:32 | 404 |      3ms |       127.0.0.1 | DELETE   "/api/delete"
+[GIN] 2030/01/02 - 10:00:32 | 404 |       0s |       127.0.0.1 | HEAD     "/api/blobs/sha256:0000000000000000000000000000000000000000000000000000000000000000"
+[GIN] 2030/01/02 - 10:00:35 | 200 |       0s |       127.0.0.1 | GET      "/api/version"
+[GIN] 2030/01/02 - 10:00:38 | 200 |      1ms |       127.0.0.1 | GET      "/api/tags"

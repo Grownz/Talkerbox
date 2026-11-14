@@ -288,7 +288,18 @@ separate TTS sidecar in `../tts-sidecar` (Kokoro ONNX).
 - **Ollama terminal**: the Log button under the status light (or Open log on the Server page) opens a read-only view of the stdout/stderr of the
   `ollama serve` that Talkerbox started. It keeps a ring buffer of the last 5000 lines and receives new lines through
   `ollama-log` events. It scrolls automatically and pauses while you are scrolled up; Clear empties it. Output of an
-  externally started Ollama cannot be captured, and the view says so.
+  externally started Ollama cannot be captured, and the view says so. Each line is parsed once when it arrives
+  (`src/lib/ollamaLog.ts`, tested): Go slog lines (`time=... level=...`) get a coloured text label (ERROR, WARN,
+  INFO, DEBUG) and a short HH:MM:SS.mmm time with the full timestamp as tooltip; GIN access lines with a 4xx/5xx
+  status count as WARN/ERROR, and bare `Error: ...` start-up failures as ERROR; everything else is shown unchanged.
+  Each line also gets a topic (Talkerbox, Start & config, GPU & memory, Model loading, Model details, Generation,
+  Requests, Status checks, Other) from its slog source file, GIN method and path, or llama.cpp prefix; indented and
+  other continuation lines inherit the previous line's topic. Level chips (Error, Warn, Info, Other), topic chips with
+  line counts (presets Overview, Loading, All; Status checks and Model details start hidden) and a debounced,
+  case-insensitive search combine to filter the view. Each run of lines hidden only by a topic shows as one
+  "N lines hidden: topic" button that turns that topic on. Raw shows the original lines, and Copy puts the shown lines
+  (original text) on the clipboard. These controls only change the view: nothing is ever sent to the server.
+  There is no file export (it would need a save dialog and file-system permission).
 - **Tokens/s**: shown at the bottom-right of each reply. While streaming it is a 3-second rolling estimate from chunk
   timestamps, measured from the first token and updated once per second. When the reply is done it shows the exact
   figure from Ollama's `eval_count / eval_duration`. The rate logic is in `src/lib/rate.ts` (tested).
