@@ -361,7 +361,8 @@ cd src-tauri; cargo clippy --all-targets; cargo test   # Rust lints (warning-fre
 ```
 
 Version numbers live in `package.json`, `package-lock.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and
-the `talkerbox` entry of `src-tauri/Cargo.lock`; a release bumps all five.
+the `talkerbox` entry of `src-tauri/Cargo.lock`; a release bumps all five, plus the version in the status line of
+the top-level `README.md` and the `CHANGELOG.md` section.
 
 App icon (`src-tauri/icons/`): the sidebar logo (`.logo-tile` with the `logo` glyph from `Icon.svelte`: a #2563c9
 rounded square, radius 9/32, the white glyph at 18/32 with stroke 1.75) rendered at 1024 px and turned into the

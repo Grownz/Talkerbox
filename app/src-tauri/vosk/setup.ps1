@@ -1,8 +1,9 @@
 # Copies the Vosk runtime DLLs next to this script and builds the MSVC import library libvosk.lib.
-# Source: the `vosk` folder of a pip-installed vosk 0.3.45 wheel (default: the spike venv).
+# Source: the `vosk` folder of a pip-installed vosk 0.3.45 wheel; pass it with -From (see README, "Set up the Vosk runtime").
 # Run from a normal PowerShell; Visual Studio Build Tools must be installed (lib.exe, dumpbin.exe).
-param([string]$From = "$PSScriptRoot\..\..\..\spikes\vosk-stt\.venv\Lib\site-packages\vosk")
+param([Parameter(Mandatory)][string]$From)
 $ErrorActionPreference = 'Stop'
+if (-not (Test-Path (Join-Path $From 'libvosk.dll'))) { throw "libvosk.dll not found in '$From': pass the vosk folder of a pip-installed vosk 0.3.45 (see README, step 2)" }
 $dlls = 'libvosk.dll', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll'
 foreach ($d in $dlls) { Copy-Item (Join-Path $From $d) $PSScriptRoot -Force }
 

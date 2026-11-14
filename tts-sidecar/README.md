@@ -122,7 +122,7 @@ $env:SIDECAR_EXE = "dist\tts-sidecar.exe"; .venv\Scripts\python -m pytest -s tes
 .\build.ps1
 ```
 
-This builds `dist\tts-sidecar.exe` (one file, about 48 MB) and a copy named
+This builds `dist\tts-sidecar.exe` (one file, about 38 MB) and a copy named
 `dist\tts-sidecar-x86_64-pc-windows-msvc.exe`, the name Tauri's `externalBin` expects.
 The model files are not bundled. The app passes their paths at startup.
 espeak-ng comes bundled through `espeakng_loader`, so it does not need to be installed on the system.
